@@ -39,25 +39,41 @@
     <h2 class="section-title">Comment ça marche ?</h2>
     <p class="section-sub">Un processus simple et transparent, de la demande à la confirmation.</p>
     <div class="steps">
-      <div class="step">
+      <div class="step-card">
         <div class="step-num">1</div>
         <h3>Remplissez le formulaire</h3>
         <p>Devis, message ou rendez-vous : indiquez vos besoins en quelques clics.</p>
+        <div class="step-actions">
+          <a class="btn btn-sm btn-outline" href="{% url 'devis' %}">Demander un devis</a>
+          <a class="btn btn-sm btn-outline" href="{% url 'rendezvous' %}">Prendre rendez-vous</a>
+        </div>
       </div>
-      <div class="step">
+      <div class="step-card">
         <div class="step-num">2</div>
         <h3>Réponse automatique</h3>
         <p>Recevez immédiatement un e-mail de confirmation avec votre numéro de suivi.</p>
+        <div class="step-actions">
+          <a class="btn btn-sm btn-outline" href="{% url 'espace_client' %}">Suivre mon dossier</a>
+          <a class="btn btn-sm btn-outline" href="{% url 'contact' %}">Nous contacter</a>
+        </div>
       </div>
-      <div class="step">
+      <div class="step-card">
         <div class="step-num">3</div>
         <h3>Un conseiller vous contacte</h3>
         <p>Notre équipe analyse votre demande et vous rappelle sous 24h ouvrées.</p>
+        <div class="step-actions">
+          <a class="btn btn-sm btn-outline" href="tel:{{ site_phone_raw }}">{{ site_phone }}</a>
+          <a class="btn btn-sm btn-outline" href="{% url 'contact' %}">Laisser un message</a>
+        </div>
       </div>
-      <div class="step">
+      <div class="step-card">
         <div class="step-num">4</div>
         <h3>Vous validez</h3>
         <p>Recevez votre devis détaillé et validez la prise en charge de votre dossier.</p>
+        <div class="step-actions">
+          <a class="btn btn-sm" href="{% url 'devis' %}">Valider ma demande</a>
+          <a class="btn btn-sm btn-outline" href="{% url 'espace_client' %}">Espace client</a>
+        </div>
       </div>
     </div>
   </div>

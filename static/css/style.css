@@ -224,7 +224,7 @@ textarea { min-height: 130px; resize: vertical; }
 .contact-item span { font-size: 14px; color: var(--muted); }
 
 /* ---------- Steps ---------- */
-.steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; counter-reset: step; }
+.steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; }
 .step { position: relative; }
 .step-num {
   width: 40px; height: 40px;
@@ -236,8 +236,12 @@ textarea { min-height: 130px; resize: vertical; }
   font-weight: 800;
   margin-bottom: 14px;
 }
-.step h3 { font-size: 16px; margin: 0 0 6px; }
-.step p { color: var(--muted); font-size: 14px; margin: 0; }
+.step-card { position: relative; background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 20px; display: flex; flex-direction: column; transition: box-shadow .15s, transform .15s; }
+.step-card:hover { box-shadow: 0 8px 24px rgba(15, 23, 42, .08); transform: translateY(-3px); }
+.step-card h3 { font-size: 16px; margin: 0 0 6px; }
+.step-card p { color: var(--muted); font-size: 14px; margin: 0 0 16px; }
+.step-actions { margin-top: auto; display: flex; flex-direction: column; gap: 8px; }
+.step-actions .btn { justify-content: center; }
 
 /* ---------- Footer ---------- */
 .site-footer {
