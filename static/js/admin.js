@@ -662,7 +662,7 @@ const BalanceAdmin = (() => {
           ${it.service_followups.length ? `<ul class="task-list">${it.service_followups.map((s) => `<li>${statusBadge(s.status)} ${escapeHtml(s.service)} — <small>début ${s.start_date} · fin ${s.due_date}</small>${s.tasks.length ? `<br><small>↳ Tâches : ${s.tasks.map((t) => escapeHtml(t.titre)).join(", ")}</small>` : ""}</li>`).join("")}</ul>` : '<p class="muted-sm">Aucun suivi de service lié.</p>'}
           <h4>Préfactures</h4>
           ${it.prefactures.length ? `<ul class="task-list">${it.prefactures.map((p) => `<li>${escapeHtml(p.numero)} — ${p.montant_ttc} TND — ${statusBadge(p.statut)}</li>`).join("")}</ul>` : '<p class="muted-sm">Aucune préfacture.</p>'}`;
-      } else if (it.type === "service") {
+      } else if (it.type === "service" && tab === "service_followups") {
         html = `
           <h3>Suivi service N°${it.id} — ${escapeHtml(it.service)}</h3>
           <p class="muted-sm">Client : <strong>${escapeHtml(it.client_name)}</strong></p>
