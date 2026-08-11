@@ -133,6 +133,8 @@ a:hover { text-decoration: underline; }
 .btn-lg { padding: 15px 30px; font-size: 16px; }
 .btn-outline { background: transparent; color: var(--primary); border: 1.5px solid var(--primary); }
 .btn-outline:hover { background: var(--primary-light); }
+.btn-danger { background: #dc2626; }
+.btn-danger:hover { background: #b91c1c; }
 .btn-block { width: 100%; justify-content: center; }
 .btn[disabled] { opacity: 0.6; cursor: not-allowed; }
 
@@ -296,6 +298,9 @@ textarea { min-height: 130px; resize: vertical; }
 .muted-sm { color: var(--muted); font-size: 12px; margin: 4px 0; }
 .task-list { list-style: none; padding: 0; margin: 6px 0 0; }
 .task-list li { padding: 5px 0; font-size: 13px; border-bottom: 1px solid #f1f5f9; }
+.explorer-actions { margin-left: 8px; display: inline-flex; gap: 6px; }
+.explorer-form { margin: 10px 0; padding: 14px; }
+.explorer-form h4 { text-transform: capitalize; }
 .att-list { list-style: none; padding: 0; margin: 6px 0 0; }
 .att-list li { padding: 4px 0; font-size: 13px; }
 .att-list a { text-decoration: none; }
@@ -338,6 +343,7 @@ textarea { min-height: 130px; resize: vertical; }
 .admin-table th, .admin-table td { padding: 12px 14px; text-align: left; font-size: 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
 .admin-table th { background: var(--primary-light); color: var(--primary-dark); font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
 .admin-table tr:last-child td { border-bottom: 0; }
+.admin-table tr.row-overdue td { background: #fef2f2; }
 .admin-login { max-width: 400px; margin: 80px auto; }
 .admin-tabs { display: flex; gap: 8px; margin-bottom: 24px; flex-wrap: wrap; }
 .admin-tabs button { padding: 10px 18px; border-radius: 10px; border: 1px solid var(--line); background: #fff; font-weight: 700; font-size: 14px; cursor: pointer; color: var(--ink); }

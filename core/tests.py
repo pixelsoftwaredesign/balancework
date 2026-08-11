@@ -439,3 +439,23 @@ class AdminDashboardTests(TestCase):
         self.assertEqual(data["counts"]["collaborateurs_actifs"], 1)
         self.assertEqual(len(data["recent_followups"]), 1)
         self.assertEqual(data["recent_followups"][0]["collaborateur_name"], "Slim")
+
+    def test_dashboard_notifications_chronological(self):
+        task_todo = DossierTask.objects.create(dossier=self.dossier, titre="Déposer la TVA", date_echeance="2026-08-10")
+        task_done = DossierTask.objects.create(dossier=self.dossier, titre="Terminée", statut="termine")
+        ClientMessage.objects.create(client=self.client_model, direction="client", text="Où en est mon dossier ?")
+        ClientMessage.objects.create(client=self.client_model, direction="client", text="Merci !")
+        answered = ClientMessage.objects.create(client=self.client_model, direction="client", text="Question résolue ?", dossier=self.dossier)
+        ClientMessage.objects.create(client=self.client_model, direction="admin", text="C'est réglé.", dossier=self.dossier)
+        res = self.client.get("/api/admin/dashboard", **self.h)
+        data = res.json()
+        nc = data["notifications_counts"]
+        self.assertEqual(nc["messages"], 2)  # messages généraux sans réponse, pas le message répondi
+        self.assertEqual(nc["taches"], 1)  # seule la tâche à faire est notifiée
+        feed = data["notifications"]
+        self.assertTrue(all(x["sort_date"] <= y["sort_date"] for x, y in zip(feed, feed[1:])))
+        msg = next(x for x in feed if x["kind"] == "message")
+        self.assertEqual(msg["client_name"], "Doe")
+        task = next(x for x in feed if x["kind"] == "tache")
+        self.assertEqual(task["titre"], "Déposer la TVA")
+        self.assertTrue(task["overdue"])

@@ -7,6 +7,7 @@ from decimal import Decimal
 from django.conf import settings
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
+from django.db.models import Max, Q
 from django.db.models.deletion import ProtectedError
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -699,7 +700,7 @@ def api_admin(request, table):
     if request.method == "GET":
         queryset = model.objects.all()
         q = request.GET.get("q", "").strip()
-        if q and table in ("client_service_suivis", "service_followups", "dossier_tasks", "declarations", "client_messages"):
+        if q:
             try:
                 queryset = queryset.filter(id=int(q))
             except ValueError:
@@ -902,12 +903,66 @@ def api_admin_dashboard(request):
         "suivis_en_cours": ServiceFollowUp.objects.filter(status="en_cours").count(),
         "collaborateurs_actifs": Collaborateur.objects.filter(actif=True).count(),
     }
+
+    # Notifications chronologiques : messages clients sans réponse + tâches à faire
+    # Thread = dossier (ou tâche) ; un message général sans contexte est son propre fil.
+    grouped = (
+        ClientMessage.objects.filter(Q(dossier__isnull=False) | Q(task__isnull=False))
+        .values("dossier_id", "task_id")
+        .annotate(last=Max("pk"))
+    )
+    unanswered_ids = list(
+        ClientMessage.objects.filter(dossier__isnull=True, task__isnull=True).values_list("pk", flat=True)
+    )
+    unanswered_ids += [d["last"] for d in grouped]
+    pending_messages = ClientMessage.objects.filter(
+        pk__in=unanswered_ids, direction="client"
+    ).select_related("client", "dossier", "service", "task")
+    feed = [
+        {
+            "kind": "message",
+            "sort_date": m.created_at.isoformat(),
+            "date": m.created_at.strftime("%d/%m/%Y %H:%M"),
+            "id": m.id,
+            "client_name": m.client.display_name,
+            "text": m.text[:140],
+            "context_label": m.context_label,
+            "dossier_id": m.dossier_id,
+            "service_id": m.service_id,
+            "task_id": m.task_id,
+        }
+        for m in pending_messages
+    ]
+    for t in DossierTask.objects.filter(statut__in=["a_faire", "en_cours"]).select_related(
+        "dossier__client", "service_followup"
+    ):
+        due = t.date_echeance or t.created_at.date()
+        feed.append({
+            "kind": "tache",
+            "sort_date": due.isoformat(),
+            "date": due.strftime("%d/%m/%Y"),
+            "id": t.id,
+            "client_name": t.dossier.client.display_name,
+            "titre": t.titre,
+            "statut": t.get_statut_display(),
+            "statut_code": t.statut,
+            "dossier_service": t.dossier.service_title,
+            "dossier_id": t.dossier_id,
+            "followup_title": t.followup_title,
+            "overdue": bool(t.date_echeance and t.date_echeance < date.today() and t.statut != "termine"),
+        })
+    feed.sort(key=lambda x: x["sort_date"])
     return _json({
         "ok": True,
         "counts": counts,
         "recent_followups": recent_followups,
         "recent_messages": recent_messages,
         "recent_payments": recent_payments,
+        "notifications": feed,
+        "notifications_counts": {
+            "messages": sum(1 for x in feed if x["kind"] == "message"),
+            "taches": sum(1 for x in feed if x["kind"] == "tache"),
+        },
     })
 
 
