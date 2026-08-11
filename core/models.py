@@ -462,6 +462,31 @@ class Payment(models.Model):
         return f"{self.dossier.service_title} (N°{self.dossier.id})" if self.dossier else "—"
 
 
+class Collaborateur(models.Model):
+    """Collaborateur du cabinet (personnel)."""
+
+    nom = models.CharField(max_length=100, verbose_name="Nom")
+    prenom = models.CharField(max_length=100, blank=True, verbose_name="Prénom")
+    email = models.EmailField(verbose_name="E-mail")
+    telephone = models.CharField(max_length=30, blank=True, verbose_name="Téléphone")
+    fonction = models.CharField(max_length=120, blank=True, verbose_name="Fonction / Poste")
+    actif = models.BooleanField(default=True, verbose_name="Actif")
+    notes = models.TextField(blank=True, verbose_name="Notes")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Ajouté le")
+
+    class Meta:
+        ordering = ["nom", "prenom", "id"]
+        verbose_name = "Collaborateur"
+        verbose_name_plural = "Personnel (collaborateurs)"
+
+    def __str__(self):
+        return self.display_name
+
+    @property
+    def display_name(self):
+        return f"{self.prenom} {self.nom}".strip() or self.email
+
+
 class ServiceFollowUp(models.Model):
     """Suivi d'un service souscrit par un client."""
 
@@ -479,6 +504,10 @@ class ServiceFollowUp(models.Model):
     )
     service = models.ForeignKey(
         Service, null=True, blank=True, on_delete=models.SET_NULL, verbose_name="Service"
+    )
+    collaborateur = models.ForeignKey(
+        Collaborateur, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="followups", verbose_name="Collaborateur assigné",
     )
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="en_attente", verbose_name="Statut")
     start_date = models.DateField(null=True, blank=True, verbose_name="Date de début")
@@ -509,6 +538,14 @@ class ServiceFollowUp(models.Model):
     @property
     def dossier_id(self):
         return self.dossier.id if self.dossier else None
+
+    @property
+    def collaborateur_name(self):
+        return self.collaborateur.display_name if self.collaborateur else "—"
+
+    @property
+    def collaborateur_id(self):
+        return self.collaborateur.id if self.collaborateur else None
 
     @property
     def dossier_tasks(self):

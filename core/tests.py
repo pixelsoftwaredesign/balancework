@@ -8,12 +8,14 @@ from .models import (
     Client,
     ClientMessage,
     ClientServiceSuivi,
+    Collaborateur,
     DeclarationFiscale,
     DevisRequest,
     DossierTask,
     Message,
     Payment,
     Service,
+    ServiceFollowUp,
 )
 
 
@@ -321,3 +323,119 @@ class AdminExplorerTests(TestCase):
         item = res.json()["item"]
         self.assertEqual(len(item["declarations"]), 1)
         self.assertEqual(len(item["payments"]), 1)
+
+
+@override_settings(ADMIN_TOKEN="secret-test")
+class CollaborateurAdminTests(TestCase):
+    def setUp(self):
+        self.h = {"HTTP_AUTHORIZATION": "Bearer secret-test"}
+
+    def test_create_list_edit_actif_delete(self):
+        res = self.client.post(
+            "/api/admin/collaborateurs",
+            data=json.dumps({"prenom": "Slim", "nom": "Ben Ali", "email": "slim@cabinet.tn", "telephone": "22", "fonction": "Comptable"}),
+            content_type="application/json",
+            **self.h,
+        )
+        self.assertEqual(res.status_code, 200)
+        cid = res.json()["id"]
+        collab = Collaborateur.objects.get(pk=cid)
+        self.assertEqual(collab.display_name, "Slim Ben Ali")
+        self.assertTrue(collab.actif)
+
+        res = self.client.get("/api/admin/collaborateurs", **self.h)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(res.json()["items"]), 1)
+        self.assertEqual(res.json()["items"][0]["display_name"], "Slim Ben Ali")
+
+        res = self.client.put(
+            "/api/admin/collaborateurs",
+            data=json.dumps({"id": cid, "field": "actif", "status": "false"}),
+            content_type="application/json",
+            **self.h,
+        )
+        self.assertEqual(res.status_code, 200)
+        collab.refresh_from_db()
+        self.assertFalse(collab.actif)
+
+        res = self.client.delete("/api/admin/collaborateurs", data=json.dumps({"id": cid}), content_type="application/json", **self.h)
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(Collaborateur.objects.filter(pk=cid).exists())
+
+    def test_duplicate_email_rejected(self):
+        Collaborateur.objects.create(nom="A", email="dup@cabinet.tn")
+        res = self.client.post(
+            "/api/admin/collaborateurs",
+            data=json.dumps({"nom": "B", "email": "DUP@cabinet.tn"}),
+            content_type="application/json",
+            **self.h,
+        )
+        self.assertEqual(res.status_code, 400)
+
+
+@override_settings(ADMIN_TOKEN="secret-test")
+class ServiceFollowUpCollaborateurTests(TestCase):
+    def setUp(self):
+        self.h = {"HTTP_AUTHORIZATION": "Bearer secret-test"}
+        self.client_model = Client.objects.create(name="Doe", email="d@test.tn", phone="1")
+        self.svc = Service.objects.create(title="TVA", slug="tva", short_desc="t", description="x")
+        self.dossier = ClientServiceSuivi.objects.create(client=self.client_model, type_service=self.svc)
+        self.collab = Collaborateur.objects.create(nom="Slim", email="slim@cabinet.tn")
+
+    def test_create_followup_with_collaborateur_and_filter(self):
+        res = self.client.post(
+            "/api/admin/service_followups",
+            data=json.dumps({
+                "client": str(self.client_model.id), "dossier": str(self.dossier.id),
+                "type_service": str(self.svc.id), "collaborateur": str(self.collab.id),
+                "status": "en_cours",
+            }),
+            content_type="application/json",
+            **self.h,
+        )
+        self.assertEqual(res.status_code, 200)
+        fup = ServiceFollowUp.objects.get()
+        self.assertEqual(fup.collaborateur_id, self.collab.id)
+
+        res = self.client.get(f"/api/admin/service_followups?collaborateur={self.collab.id}", **self.h)
+        self.assertEqual(res.status_code, 200)
+        items = res.json()["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["collaborateur_name"], "Slim")
+
+    def test_assign_collaborateur_via_put(self):
+        fup = ServiceFollowUp.objects.create(client=self.client_model, dossier=self.dossier, service=self.svc)
+        res = self.client.put(
+            "/api/admin/service_followups",
+            data=json.dumps({"id": fup.id, "field": "collaborateur", "status": str(self.collab.id)}),
+            content_type="application/json",
+            **self.h,
+        )
+        self.assertEqual(res.status_code, 200)
+        fup.refresh_from_db()
+        self.assertEqual(fup.collaborateur_id, self.collab.id)
+
+
+@override_settings(ADMIN_TOKEN="secret-test")
+class AdminDashboardTests(TestCase):
+    def setUp(self):
+        self.h = {"HTTP_AUTHORIZATION": "Bearer secret-test"}
+        self.client_model = Client.objects.create(name="Doe", email="d@test.tn", phone="1")
+        self.svc = Service.objects.create(title="TVA", slug="tva", short_desc="t", description="x")
+        self.dossier = ClientServiceSuivi.objects.create(client=self.client_model, type_service=self.svc)
+        self.collab = Collaborateur.objects.create(nom="Slim", email="slim@cabinet.tn")
+        ServiceFollowUp.objects.create(client=self.client_model, dossier=self.dossier, service=self.svc, collaborateur=self.collab, status="en_cours")
+
+    def test_dashboard_requires_token(self):
+        self.assertEqual(self.client.get("/api/admin/dashboard").status_code, 401)
+
+    def test_dashboard_counts_and_recent_followups(self):
+        res = self.client.get("/api/admin/dashboard", **self.h)
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data["counts"]["clients"], 1)
+        self.assertEqual(data["counts"]["dossiers_actifs"], 1)
+        self.assertEqual(data["counts"]["suivis_en_cours"], 1)
+        self.assertEqual(data["counts"]["collaborateurs_actifs"], 1)
+        self.assertEqual(len(data["recent_followups"]), 1)
+        self.assertEqual(data["recent_followups"][0]["collaborateur_name"], "Slim")

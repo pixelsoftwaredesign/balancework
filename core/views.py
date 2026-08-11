@@ -18,6 +18,7 @@ from .models import (
     Client,
     ClientMessage,
     ClientServiceSuivi,
+    Collaborateur,
     DeclarationFiscale,
     DevisRequest,
     DossierAttachment,
@@ -674,7 +675,7 @@ TABLES = {
     "messages": (Message, ["id", "name", "email", "phone", "subject", "message", "status", "created_at"], None),
     "clients": (Client, ["id", "name", "email", "phone", "company", "notes", "created_at"], None),
     "payments": (Payment, ["id", "client_name", "dossier_service", "amount", "date", "status", "method", "notes", "created_at"], None),
-    "service_followups": (ServiceFollowUp, ["id", "client_name", "service_title", "dossier_id", "dossier_label", "status", "start_date", "due_date", "notes", "created_at"], None),
+    "service_followups": (ServiceFollowUp, ["id", "client_name", "service_title", "dossier_id", "dossier_label", "collaborateur_id", "collaborateur_name", "status", "start_date", "due_date", "notes", "created_at"], None),
     "types_service": (Service, ["id", "title", "slug", "short_desc", "parent_title"], None),
     "client_service_suivis": (ClientServiceSuivi, ["id", "client_name", "service_title", "montant", "statut_paiement", "statut_service", "date_echeance", "frequence", "commentaire", "service_note"], None),
     "client_messages": (ClientMessage, ["id", "client_name", "dossier_service", "service_title", "task_title", "direction", "text", "created_at"], None),
@@ -682,6 +683,7 @@ TABLES = {
     "prefactures": (Prefacture, ["id", "client_name", "dossier_service", "numero", "date", "montant_ht", "taux_tva", "montant_ttc", "statut"], None),
     "dossier_attachments": (DossierAttachment, ["id", "client_name", "dossier_service", "original_name", "category", "size", "uploaded_by", "created_at"], None),
     "declarations": (DeclarationFiscale, ["id", "client_name", "dossier_service", "type_declaration", "periode", "date_echeance_legale", "statut", "numero_quittance_ou_tej", "montant_a_payer", "notes_collaborateur"], None),
+    "collaborateurs": (Collaborateur, ["id", "display_name", "fonction", "email", "telephone", "actif", "notes", "created_at"], None),
 }
 
 
@@ -725,6 +727,10 @@ def api_admin(request, table):
                 queryset = queryset.filter(service_id=int(service))
             if task.isdigit():
                 queryset = queryset.filter(task_id=int(task))
+        if table == "service_followups":
+            collab = request.GET.get("collaborateur", "").strip()
+            if collab.isdigit():
+                queryset = queryset.filter(collaborateur_id=int(collab))
         items = []
         for obj in queryset:
             item = {f: getattr(obj, f, "") for f in fields}
@@ -776,6 +782,24 @@ def api_admin(request, table):
                 return _json({"ok": False, "error": "Date invalide (AAAA-MM-JJ)"}, 400)
         elif field in ("commentaire", "notes", "numero_quittance_ou_tej", "notes_collaborateur", "service_note", "titre", "description", "periode"):
             value = str(value)
+        elif table == "service_followups" and field == "collaborateur":
+            raw = str(value).strip()
+            collab = None
+            if raw.isdigit():
+                collab = Collaborateur.objects.filter(pk=int(raw)).first()
+                if not collab:
+                    return _json({"ok": False, "error": "Collaborateur introuvable."}, 400)
+            value = collab
+        elif table == "collaborateurs" and field in ("nom", "prenom", "email", "telephone", "fonction", "notes"):
+            value = str(value)
+            if field == "email" and not value.strip():
+                return _json({"ok": False, "error": "E-mail requis."}, 400)
+            if field == "email":
+                value = value.strip().lower()
+                if Collaborateur.objects.exclude(pk=obj.pk).filter(email__iexact=value).exists():
+                    return _json({"ok": False, "error": "Un collaborateur existe déjà avec cet e-mail."}, 400)
+        elif table == "collaborateurs" and field == "actif":
+            value = value in ("1", "true", "True", "on")
         elif table == "types_service" and field in ("title", "short_desc", "slug", "price_hint", "icon"):
             value = str(value)
             if field == "slug":
@@ -815,7 +839,7 @@ def api_admin(request, table):
             except ProtectedError:
                 return _json({"ok": False, "error": "Ce service est utilisé par des dossiers clients : suppression impossible."}, 400)
             return _json({"ok": True, "message": "Service supprimé."})
-        if table in ("client_messages", "client_service_suivis", "dossier_tasks", "service_followups", "prefactures", "dossier_attachments", "declarations", "payments", "devis_requests", "appointments", "messages"):
+        if table in ("client_messages", "client_service_suivis", "dossier_tasks", "service_followups", "prefactures", "dossier_attachments", "declarations", "payments", "devis_requests", "appointments", "messages", "collaborateurs"):
             obj.delete()
             return _json({"ok": True, "message": "Élément supprimé."})
         return _json({"ok": False, "error": "Suppression non disponible pour cette table."}, 400)
@@ -824,6 +848,64 @@ def api_admin(request, table):
         return _api_admin_create(request, table)
 
     return _json({"ok": False, "error": "Méthode non autorisée"}, 405)
+
+
+@csrf_exempt
+def api_admin_dashboard(request):
+    if not _authorized(request):
+        return _json({"ok": False, "error": "Non autorisé"}, 401)
+    followups = ServiceFollowUp.objects.select_related("client", "service", "collaborateur")[:8]
+    recent_followups = [
+        {
+            "id": f.id,
+            "client_name": f.client.display_name,
+            "service_title": f.service_title,
+            "collaborateur_name": f.collaborateur_name,
+            "status": f.get_status_display(),
+            "due_date": f.due_date.strftime("%d/%m/%Y") if f.due_date else "—",
+        }
+        for f in followups
+    ]
+    msgs = ClientMessage.objects.select_related("client", "dossier")[:6]
+    recent_messages = [
+        {
+            "id": m.id,
+            "client_name": m.client.display_name,
+            "direction": m.direction,
+            "text": m.text[:120],
+            "context_label": m.context_label,
+            "created_at": m.created_at.strftime("%d/%m/%Y %H:%M"),
+        }
+        for m in msgs
+    ]
+    pays = Payment.objects.select_related("client")[:6]
+    recent_payments = [
+        {
+            "id": p.id,
+            "client_name": p.client_name,
+            "amount": str(p.amount),
+            "date": p.date.strftime("%d/%m/%Y"),
+            "status": p.get_status_display(),
+        }
+        for p in pays
+    ]
+    counts = {
+        "devis_nouveaux": DevisRequest.objects.filter(status="nouveau").count(),
+        "messages_nouveaux": Message.objects.filter(status="nouveau").count(),
+        "clients": Client.objects.count(),
+        "dossiers_actifs": ClientServiceSuivi.objects.exclude(statut_service="cloture").count(),
+        "paiements_retard": Payment.objects.filter(status__in=["retard", "en_attente"]).count(),
+        "declarations_retard": DeclarationFiscale.objects.filter(statut="retard").count(),
+        "suivis_en_cours": ServiceFollowUp.objects.filter(status="en_cours").count(),
+        "collaborateurs_actifs": Collaborateur.objects.filter(actif=True).count(),
+    }
+    return _json({
+        "ok": True,
+        "counts": counts,
+        "recent_followups": recent_followups,
+        "recent_messages": recent_messages,
+        "recent_payments": recent_payments,
+    })
 
 
 @csrf_exempt
@@ -1345,16 +1427,38 @@ def _api_admin_create(request, table):
                     date.fromisoformat(val)
                 except ValueError:
                     return _json({"ok": False, "error": f"Date {field_name} invalide (AAAA-MM-JJ)."}, 400)
+        collab = None
+        if (body.get("collaborateur") or "").strip().isdigit():
+            collab = Collaborateur.objects.filter(pk=int(body["collaborateur"])).first()
         sf = ServiceFollowUp.objects.create(
             client=client,
             dossier=dossier,
             service=service,
+            collaborateur=collab,
             status=status,
             start_date=start_date or None,
             due_date=due_date or None,
             notes=(body.get("notes") or "").strip(),
         )
         return _json({"ok": True, "id": sf.id})
+
+    if table == "collaborateurs":
+        nom = (body.get("nom") or "").strip()
+        email = (body.get("email") or "").strip().lower()
+        if not nom or not email:
+            return _json({"ok": False, "error": "Nom et e-mail requis."}, 400)
+        if Collaborateur.objects.filter(email__iexact=email).exists():
+            return _json({"ok": False, "error": "Un collaborateur existe déjà avec cet e-mail."}, 400)
+        obj = Collaborateur.objects.create(
+            nom=nom,
+            prenom=(body.get("prenom") or "").strip(),
+            email=email,
+            telephone=(body.get("telephone") or "").strip(),
+            fonction=(body.get("fonction") or "").strip(),
+            actif=(body.get("actif", "true") in ("1", "true", "True", "on", "")),
+            notes=(body.get("notes") or "").strip(),
+        )
+        return _json({"ok": True, "id": obj.id})
 
     if table == "client_messages":
         try:

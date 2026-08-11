@@ -1,7 +1,26 @@
 const BalanceAdmin = (() => {
   const API_BASE = window.BALANCEWORK_API || "";
   const TOKEN_KEY = "bts_admin_token";
-  let currentTab = "devis_requests";
+  let currentTab = "dashboard";
+
+  const TITLES = {
+    dashboard: "Aperçu général",
+    client_messages: "Messagerie clients",
+    clients: "Gestion clients",
+    explorer: "Explorateur dossiers",
+    client_service_suivis: "Dossiers clients",
+    dossier_tasks: "Tâches",
+    service_followups: "Suivi services",
+    prefactures: "Préfactures",
+    dossier_attachments: "Pièces jointes",
+    declarations: "Déclarations fiscales",
+    payments: "Paiements",
+    collaborateurs: "Gestion personnel",
+    devis_requests: "Demandes de devis",
+    appointments: "Rendez-vous",
+    messages: "Messages du site",
+    types_service: "Types de service",
+  };
 
   const STATUS_OPTIONS = {
     devis_requests: ["nouveau", "en_cours", "traite", "annule"],
@@ -44,7 +63,7 @@ const BalanceAdmin = (() => {
     const input = document.getElementById("token-input");
     const err = document.getElementById("login-error");
     sessionStorage.setItem(TOKEN_KEY, input.value.trim());
-    api("/api/admin/devis_requests")
+    api("/api/admin/dashboard")
       .then(() => {
         err.className = "alert";
         showPanel();
@@ -71,9 +90,11 @@ const BalanceAdmin = (() => {
   function switchTab(tab) {
     currentTab = tab;
     stopLive();
-    document.querySelectorAll(".admin-tabs button").forEach((b) => {
+    document.querySelectorAll(".admin-nav button").forEach((b) => {
       b.classList.toggle("active", b.dataset.tab === tab);
     });
+    const title = document.getElementById("admin-title");
+    if (title) title.textContent = TITLES[tab] || "Administration";
     document.getElementById("create-box").style.display = "none";
     document.getElementById("create-box").innerHTML = "";
     document.getElementById("create-btn").style.display = CREATE_FORMS[tab] ? "" : "none";
@@ -155,9 +176,19 @@ const BalanceAdmin = (() => {
       { name: "client", label: "Client *", type: "select", source: "/api/admin/clients", valueKey: "id", textKey: (c) => c.name },
       { name: "dossier", label: "Dossier associé *", type: "select", source: "/api/admin/client_service_suivis", valueKey: "id", textKey: (d) => d.client_name + " — " + d.service_title + " (N°" + d.id + ")" },
       { name: "type_service", label: "Service *", type: "select", source: "/api/admin/types_service", valueKey: "id", textKey: (s) => s.title },
+      { name: "collaborateur", label: "Collaborateur assigné", type: "select", source: "/api/admin/collaborateurs", valueKey: "id", textKey: (s) => s.display_name },
       { name: "status", label: "Statut", type: "select", options: ["en_attente", "en_cours", "termine", "cloture", "annule"] },
       { name: "start_date", label: "Date de début (AAAA-MM-JJ)", type: "date" },
       { name: "due_date", label: "Échéance (AAAA-MM-JJ)", type: "date" },
+      { name: "notes", label: "Notes", type: "textarea" },
+    ],
+    collaborateurs: [
+      { name: "prenom", label: "Prénom", type: "text" },
+      { name: "nom", label: "Nom *", type: "text" },
+      { name: "email", label: "E-mail *", type: "email" },
+      { name: "telephone", label: "Téléphone", type: "text" },
+      { name: "fonction", label: "Fonction / Poste", type: "text" },
+      { name: "actif", label: "Actif", type: "select", options: ["true", "false"] },
       { name: "notes", label: "Notes", type: "textarea" },
     ],
   };
@@ -219,9 +250,19 @@ const BalanceAdmin = (() => {
       { key: "client_name", label: "Client" },
       { key: "service_title", label: "Service" },
       { key: "dossier_label", label: "Dossier" },
+      { key: "collaborateur_name", label: "Collaborateur" },
       { key: "status", label: "Statut" },
       { key: "start_date", label: "Début" },
       { key: "due_date", label: "Échéance" },
+      { key: "notes", label: "Notes" },
+    ],
+    collaborateurs: [
+      { key: "id", label: "N°" },
+      { key: "display_name", label: "Nom complet" },
+      { key: "fonction", label: "Fonction" },
+      { key: "email", label: "E-mail" },
+      { key: "telephone", label: "Tél." },
+      { key: "actif", label: "Actif" },
       { key: "notes", label: "Notes" },
     ],
     types_service: [
@@ -334,17 +375,36 @@ const BalanceAdmin = (() => {
       montant_a_payer: { type: "number", step: "0.001" },
       notes_collaborateur: { type: "text" },
     },
+    collaborateurs: {
+      nom: { type: "text" },
+      prenom: { type: "text" },
+      email: { type: "text" },
+      telephone: { type: "text" },
+      fonction: { type: "text" },
+      notes: { type: "text" },
+    },
   };
 
   const ROW_ACTIONS = {
     types_service: (item) => `
       <button class="btn btn-sm" onclick="BalanceAdmin.addSubService(${item.id}, '${escapeHtml(String(item.title)).replace(/'/g, "\\'")}')">＋ sous-service</button>
       <button class="btn btn-sm btn-danger" onclick="BalanceAdmin.deleteService(${item.id}, '${escapeHtml(String(item.title)).replace(/'/g, "\\'")}')">Supprimer</button>`,
+    collaborateurs: (item) => `
+      <button class="btn btn-sm btn-danger" onclick="BalanceAdmin.deleteCollaborateur(${item.id}, '${escapeHtml(String(item.display_name)).replace(/'/g, "\\'")}')">Supprimer</button>`,
   };
 
   let liveOn = false;
   let liveTimer = null;
   let currentDetail = null;
+  let collabCache = [];
+
+  async function ensureCollabs() {
+    if (collabCache.length) return;
+    try {
+      const data = await api("/api/admin/collaborateurs");
+      collabCache = data.items || [];
+    } catch (e) {}
+  }
 
   function stopLive() {
     liveOn = false;
@@ -374,12 +434,17 @@ const BalanceAdmin = (() => {
     if (ae && ["INPUT", "SELECT", "TEXTAREA"].includes(ae.tagName)) return;
     if (document.getElementById("admin-detail-overlay").style.display === "flex") return;
     try {
-      await applyFilters();
+      if (currentTab === "dashboard") await loadDashboard();
+      else await applyFilters();
     } catch (e) {}
   }
 
   async function loadTab(tab) {
     const wrap = document.getElementById("tab-content");
+    if (tab === "dashboard") {
+      loadDashboard();
+      return;
+    }
     if (tab === "explorer") {
       loadExplorer();
       return;
@@ -403,6 +468,12 @@ const BalanceAdmin = (() => {
         <input id="id-search" placeholder="Filtrer par N° (ID)…" oninput="BalanceAdmin.applyFilters()" />
         ${liveBtn}
       </div>`;
+    } else if (tab === "service_followups") {
+      toolbar = `<div class="tab-toolbar">
+        <select id="fu-collab" onchange="BalanceAdmin.applyFilters()"><option value="">Tous les collaborateurs</option></select>
+        <input id="id-search" placeholder="Filtrer par N° (ID)…" oninput="BalanceAdmin.applyFilters()" />
+        ${liveBtn}
+      </div>`;
     } else if (detail) {
       toolbar = `<div class="tab-toolbar"><input id="id-search" placeholder="Filtrer par N° (ID)…" oninput="BalanceAdmin.applyFilters()" /><small>Recherche par identifiant du dossier / service / tâche</small>${liveBtn}</div>`;
     } else {
@@ -412,6 +483,11 @@ const BalanceAdmin = (() => {
     try {
       if (tab === "dossier_tasks") await populateTaskFilters();
       if (tab === "client_messages") await populateMessageFilters();
+      if (tab === "service_followups") {
+        await ensureCollabs();
+        const fuSel = document.getElementById("fu-collab");
+        if (fuSel) fuSel.innerHTML = `<option value="">Tous les collaborateurs</option>${collabCache.map((x) => `<option value="${x.id}">${escapeHtml(x.display_name)}</option>`).join("")}`;
+      }
       const data = await api(`/api/admin/${tab}`);
       renderTable(tab, data.items || []);
       setLive(true);
@@ -463,6 +539,7 @@ const BalanceAdmin = (() => {
   async function applyFilters() {
     const wrap = document.getElementById("tab-table");
     if (!wrap) return;
+    if (currentTab === "dashboard" || currentTab === "explorer") return;
     try {
       const qs = [];
       const c = document.getElementById("tm-client");
@@ -472,6 +549,7 @@ const BalanceAdmin = (() => {
       const msgD = document.getElementById("msg-dossier");
       const msgS = document.getElementById("msg-service");
       const msgT = document.getElementById("msg-task");
+      const fuC = document.getElementById("fu-collab");
       const id = document.getElementById("id-search");
       if (c && c.value) qs.push("client=" + encodeURIComponent(c.value));
       if (st && st.value) qs.push("statut=" + encodeURIComponent(st.value));
@@ -480,6 +558,7 @@ const BalanceAdmin = (() => {
       if (msgD && msgD.value) qs.push("dossier=" + encodeURIComponent(msgD.value));
       if (msgS && msgS.value) qs.push("service=" + encodeURIComponent(msgS.value));
       if (msgT && msgT.value) qs.push("task=" + encodeURIComponent(msgT.value));
+      if (fuC && fuC.value) qs.push("collaborateur=" + encodeURIComponent(fuC.value));
       if (id && id.value.trim()) qs.push("q=" + encodeURIComponent(id.value.trim()));
       const data = await api(`/api/admin/${currentTab}${qs.length ? "?" + qs.join("&") : ""}`);
       renderTable(currentTab, data.items || []);
@@ -506,6 +585,18 @@ const BalanceAdmin = (() => {
         const cells = cols
           .map((c) => {
             const value = item[c.key];
+            if (tab === "service_followups" && c.key === "collaborateur_name") {
+              const opts = ['<option value="">— Aucun —</option>']
+                .concat(collabCache.map((x) => `<option value="${x.id}" ${Number(item.collaborateur_id) === Number(x.id) ? "selected" : ""}>${escapeHtml(x.display_name)}</option>`))
+                .join("");
+              return `<td><select class="status-select" data-table="${tab}" data-field="collaborateur" data-id="${item.id}" onchange="BalanceAdmin.saveField(this)">${opts}</select></td>`;
+            }
+            if (tab === "collaborateurs" && c.key === "actif") {
+              return `<td><select class="status-select" data-table="${tab}" data-field="actif" data-id="${item.id}" onchange="BalanceAdmin.saveField(this)">
+                <option value="true" ${value ? "selected" : ""}>Actif</option>
+                <option value="false" ${!value ? "selected" : ""}>Inactif</option>
+              </select></td>`;
+            }
             if (c.key === "status" || c.key === "statut_paiement" || c.key === "statut_service" || c.key === "frequence" || c.key === "repetition" || c.key === "type_declaration" || (c.key === "statut" && tab !== "dossier_attachments")) {
               const opts = Array.isArray(STATUS_OPTIONS[tab])
                 ? STATUS_OPTIONS[tab]
@@ -977,13 +1068,80 @@ const BalanceAdmin = (() => {
     }
   }
 
+  async function loadDashboard() {
+    const wrap = document.getElementById("tab-content");
+    wrap.innerHTML = `<div id="tab-toolbar"><button id="live-btn" class="btn btn-sm" onclick="BalanceAdmin.toggleLive()">Temps réel : OFF</button><small class="muted-sm" style="margin-left:10px">Suivi des services et activité en temps réel (rafraîchissement toutes les 15 s).</small></div><div id="tab-table"><p>Chargement…</p></div>`;
+    try {
+      const data = await api("/api/admin/dashboard");
+      renderDashboard(data);
+      setLive(true);
+    } catch (e) {
+      document.getElementById("tab-table").innerHTML = `<div class="alert show alert-error">${e.message}</div>`;
+      setLive(false);
+    }
+  }
+
+  function renderDashboard(data) {
+    const c = data.counts;
+    const cards = [
+      { label: "Demandes de devis", value: c.devis_nouveaux, extra: "nouveau", tab: "devis_requests" },
+      { label: "Messages du site", value: c.messages_nouveaux, extra: "nouveau", tab: "messages" },
+      { label: "Clients", value: c.clients, extra: "comptes", tab: "clients" },
+      { label: "Dossiers actifs", value: c.dossiers_actifs, extra: "en cours", tab: "client_service_suivis" },
+      { label: "Paiements en attente", value: c.paiements_retard, extra: "à relancer", tab: "payments" },
+      { label: "Déclarations en retard", value: c.declarations_retard, extra: "à traiter", tab: "declarations" },
+      { label: "Suivis en cours", value: c.suivis_en_cours, extra: "temps réel", tab: "service_followups" },
+      { label: "Personnel actif", value: c.collaborateurs_actifs, extra: "collaborateurs", tab: "collaborateurs" },
+    ];
+    const cardsHtml = cards.map((k) => `<div class="dash-card" onclick="BalanceAdmin.switchTab('${k.tab}')"><div class="dash-value">${k.value}</div><div class="dash-label">${k.label}</div><div class="dash-extra">${k.extra}</div></div>`).join("");
+    const fuRows = (data.recent_followups || []).map((f) => `<tr>
+      <td><strong>${escapeHtml(f.client_name)}</strong></td>
+      <td>${escapeHtml(f.service_title)}</td>
+      <td>${escapeHtml(f.collaborateur_name)}</td>
+      <td>${statusBadge(f.status)}</td>
+      <td>${f.due_date}</td>
+      <td><button class="btn btn-sm" onclick="BalanceAdmin.showDetail('service_followups', ${f.id})">Détail</button></td>
+    </tr>`).join("");
+    const msgRows = (data.recent_messages || []).map((m) => `<tr>
+      <td><strong>${escapeHtml(m.client_name)}</strong></td>
+      <td>${m.direction === "admin" ? "Cabinet →" : "Client →"}</td>
+      <td>${escapeHtml(m.text)}${m.context_label && m.context_label !== "Général" ? `<div class="msg-context">↳ ${escapeHtml(m.context_label)}</div>` : ""}</td>
+      <td>${m.created_at}</td>
+    </tr>`).join("");
+    const payRows = (data.recent_payments || []).map((p) => `<tr>
+      <td><strong>${escapeHtml(p.client_name)}</strong></td>
+      <td>${p.amount} TND</td>
+      <td>${p.date}</td>
+      <td>${statusBadge(p.status)}</td>
+    </tr>`).join("");
+    document.getElementById("tab-table").innerHTML = `
+      <div class="dash-grid">${cardsHtml}</div>
+      <h4>Suivi des services — temps réel</h4>
+      <table class="admin-table"><thead><tr><th>Client</th><th>Service</th><th>Collaborateur</th><th>Statut</th><th>Échéance</th><th></th></tr></thead><tbody>${fuRows || '<tr><td colspan="6"><p style="color:#64748b">Aucun suivi de service.</p></td></tr>'}</tbody></table>
+      <div class="dash-cols">
+        <div><h4>Derniers messages clients</h4><table class="admin-table"><thead><tr><th>Client</th><th>Sens</th><th>Message</th><th>Date</th></tr></thead><tbody>${msgRows || '<tr><td colspan="4"><p style="color:#64748b">Aucun message.</p></td></tr>'}</tbody></table></div>
+        <div><h4>Derniers paiements</h4><table class="admin-table"><thead><tr><th>Client</th><th>Montant</th><th>Date</th><th>Statut</th></tr></thead><tbody>${payRows || '<tr><td colspan="4"><p style="color:#64748b">Aucun paiement.</p></td></tr>'}</tbody></table></div>
+      </div>`;
+  }
+
+  async function deleteCollaborateur(id, name) {
+    if (!confirm(`Supprimer le collaborateur « ${name} » ?`)) return;
+    try {
+      await api("/api/admin/collaborateurs", { method: "DELETE", body: JSON.stringify({ id }) });
+      collabCache = [];
+      applyFilters();
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
     if (token()) {
-      api("/api/admin/devis_requests")
+      api("/api/admin/dashboard")
         .then(showPanel)
         .catch(() => sessionStorage.removeItem(TOKEN_KEY));
     }
   });
 
-  return { login, logout, switchTab, saveField, toggleCreate, showDetail, closeDetail, applyFilters, toggleLive, addSubService, deleteService, replyMessage, loadExplorer, explorerDossiers, explorerDossier };
+  return { login, logout, switchTab, saveField, toggleCreate, showDetail, closeDetail, applyFilters, toggleLive, addSubService, deleteService, replyMessage, loadExplorer, explorerDossiers, explorerDossier, deleteCollaborateur };
 })();

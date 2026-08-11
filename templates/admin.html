@@ -6,7 +6,7 @@
 <section class="section">
   <div class="container">
     <h2 class="section-title">Espace administrateur</h2>
-    <p class="section-sub">Gérez les demandes de devis, messages et rendez-vous reçus via le site, ainsi que vos clients, paiements et suivis de service.</p>
+    <p class="section-sub">Pilotez le cabinet : tableau de bord temps réel, messagerie clients, clients & dossiers, finances, personnel et demandes reçues via le site.</p>
 
     <div id="login-box" class="card admin-login">
       <h3 style="margin:0 0 8px">Connexion</h3>
@@ -17,30 +17,56 @@
     </div>
 
     <div id="admin-panel" style="display:none">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:20px">
-        <div class="admin-tabs" style="margin:0">
-          <button data-tab="devis_requests" class="active" onclick="BalanceAdmin.switchTab('devis_requests')">Devis</button>
-          <button data-tab="appointments" onclick="BalanceAdmin.switchTab('appointments')">Rendez-vous</button>
-          <button data-tab="messages" onclick="BalanceAdmin.switchTab('messages')">Messages</button>
-          <button data-tab="client_messages" onclick="BalanceAdmin.switchTab('client_messages')">Messagerie clients</button>
-          <button data-tab="clients" onclick="BalanceAdmin.switchTab('clients')">Clients</button>
-          <button data-tab="explorer" onclick="BalanceAdmin.switchTab('explorer')">Explorateur dossiers</button>
-          <button data-tab="payments" onclick="BalanceAdmin.switchTab('payments')">Paiements</button>
-          <button data-tab="service_followups" onclick="BalanceAdmin.switchTab('service_followups')">Suivi services</button>
-          <button data-tab="client_service_suivis" onclick="BalanceAdmin.switchTab('client_service_suivis')">Dossiers clients</button>
-          <button data-tab="dossier_tasks" onclick="BalanceAdmin.switchTab('dossier_tasks')">Tâches</button>
-          <button data-tab="prefactures" onclick="BalanceAdmin.switchTab('prefactures')">Préfactures</button>
-          <button data-tab="dossier_attachments" onclick="BalanceAdmin.switchTab('dossier_attachments')">Pièces jointes</button>
-          <button data-tab="declarations" onclick="BalanceAdmin.switchTab('declarations')">Déclarations fiscales</button>
-          <button data-tab="types_service" onclick="BalanceAdmin.switchTab('types_service')">Types de service</button>
-        </div>
-        <div style="display:flex;gap:8px">
-          <button class="btn" id="create-btn" style="display:none" onclick="BalanceAdmin.toggleCreate()">＋ Ajouter</button>
-          <button class="btn btn-outline" onclick="BalanceAdmin.logout()">Déconnexion</button>
-        </div>
+      <div class="admin-layout">
+        <aside class="admin-nav">
+          <div class="admin-nav-title">Balance &amp; Tax Safety</div>
+          <div class="admin-nav-group">
+            <div class="admin-nav-label">Tableau de bord</div>
+            <button data-tab="dashboard" class="active" onclick="BalanceAdmin.switchTab('dashboard')">Aperçu général</button>
+          </div>
+          <div class="admin-nav-group">
+            <div class="admin-nav-label">Messagerie</div>
+            <button data-tab="client_messages" onclick="BalanceAdmin.switchTab('client_messages')">Messagerie clients</button>
+          </div>
+          <div class="admin-nav-group">
+            <div class="admin-nav-label">Clients &amp; dossiers</div>
+            <button data-tab="clients" onclick="BalanceAdmin.switchTab('clients')">Gestion clients</button>
+            <button data-tab="explorer" onclick="BalanceAdmin.switchTab('explorer')">Explorateur dossiers</button>
+            <button data-tab="client_service_suivis" onclick="BalanceAdmin.switchTab('client_service_suivis')">Dossiers clients</button>
+            <button data-tab="dossier_tasks" onclick="BalanceAdmin.switchTab('dossier_tasks')">Tâches</button>
+            <button data-tab="service_followups" onclick="BalanceAdmin.switchTab('service_followups')">Suivi services</button>
+            <button data-tab="prefactures" onclick="BalanceAdmin.switchTab('prefactures')">Préfactures</button>
+            <button data-tab="dossier_attachments" onclick="BalanceAdmin.switchTab('dossier_attachments')">Pièces jointes</button>
+            <button data-tab="declarations" onclick="BalanceAdmin.switchTab('declarations')">Déclarations fiscales</button>
+          </div>
+          <div class="admin-nav-group">
+            <div class="admin-nav-label">Finances</div>
+            <button data-tab="payments" onclick="BalanceAdmin.switchTab('payments')">Paiements</button>
+          </div>
+          <div class="admin-nav-group">
+            <div class="admin-nav-label">Personnel</div>
+            <button data-tab="collaborateurs" onclick="BalanceAdmin.switchTab('collaborateurs')">Gestion personnel</button>
+          </div>
+          <div class="admin-nav-group">
+            <div class="admin-nav-label">Site</div>
+            <button data-tab="devis_requests" onclick="BalanceAdmin.switchTab('devis_requests')">Demandes de devis</button>
+            <button data-tab="appointments" onclick="BalanceAdmin.switchTab('appointments')">Rendez-vous</button>
+            <button data-tab="messages" onclick="BalanceAdmin.switchTab('messages')">Messages du site</button>
+            <button data-tab="types_service" onclick="BalanceAdmin.switchTab('types_service')">Types de service</button>
+          </div>
+        </aside>
+        <main class="admin-main">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:20px">
+            <h3 id="admin-title" style="margin:0">Aperçu général</h3>
+            <div style="display:flex;gap:8px">
+              <button class="btn" id="create-btn" style="display:none" onclick="BalanceAdmin.toggleCreate()">＋ Ajouter</button>
+              <button class="btn btn-outline" onclick="BalanceAdmin.logout()">Déconnexion</button>
+            </div>
+          </div>
+          <div id="create-box" style="display:none;margin-bottom:20px"></div>
+          <div id="tab-content"><p>Chargement…</p></div>
+        </main>
       </div>
-      <div id="create-box" style="display:none;margin-bottom:20px"></div>
-      <div id="tab-content"><p>Chargement…</p></div>
     </div>
   </div>
 </section>
