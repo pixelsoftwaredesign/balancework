@@ -731,6 +731,8 @@ def api_admin(request, table):
             collab = request.GET.get("collaborateur", "").strip()
             if collab.isdigit():
                 queryset = queryset.filter(collaborateur_id=int(collab))
+        if table == "client_messages":
+            queryset = queryset.order_by("-created_at")
         items = []
         for obj in queryset:
             item = {f: getattr(obj, f, "") for f in fields}
@@ -866,7 +868,7 @@ def api_admin_dashboard(request):
         }
         for f in followups
     ]
-    msgs = ClientMessage.objects.select_related("client", "dossier")[:6]
+    msgs = ClientMessage.objects.select_related("client", "dossier").order_by("-created_at")[:6]
     recent_messages = [
         {
             "id": m.id,
@@ -892,6 +894,7 @@ def api_admin_dashboard(request):
     counts = {
         "devis_nouveaux": DevisRequest.objects.filter(status="nouveau").count(),
         "messages_nouveaux": Message.objects.filter(status="nouveau").count(),
+        "messages_clients": ClientMessage.objects.count(),
         "clients": Client.objects.count(),
         "dossiers_actifs": ClientServiceSuivi.objects.exclude(statut_service="cloture").count(),
         "paiements_retard": Payment.objects.filter(status__in=["retard", "en_attente"]).count(),

@@ -1086,6 +1086,7 @@ const BalanceAdmin = (() => {
     const cards = [
       { label: "Demandes de devis", value: c.devis_nouveaux, extra: "nouveau", tab: "devis_requests" },
       { label: "Messages du site", value: c.messages_nouveaux, extra: "nouveau", tab: "messages" },
+      { label: "Messages clients", value: c.messages_clients, extra: "messagerie", tab: "client_messages" },
       { label: "Clients", value: c.clients, extra: "comptes", tab: "clients" },
       { label: "Dossiers actifs", value: c.dossiers_actifs, extra: "en cours", tab: "client_service_suivis" },
       { label: "Paiements en attente", value: c.paiements_retard, extra: "à relancer", tab: "payments" },
