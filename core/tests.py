@@ -8,9 +8,11 @@ from .models import (
     Client,
     ClientMessage,
     ClientServiceSuivi,
+    DeclarationFiscale,
     DevisRequest,
     DossierTask,
     Message,
+    Payment,
     Service,
 )
 
@@ -217,3 +219,105 @@ class ClientMessageContextTests(TestCase):
             **self.h,
         )
         self.assertEqual(res.status_code, 400)
+
+
+@override_settings(ADMIN_TOKEN="secret-test")
+class AdminMessagingContextTests(TestCase):
+    def setUp(self):
+        self.h = {"HTTP_AUTHORIZATION": "Bearer secret-test"}
+        self.client_model = Client.objects.create(name="Doe Jane", email="j@test.tn", phone="123")
+        self.svc = Service.objects.create(title="Fiscalité", slug="fiscal", short_desc="f", description="x")
+        self.dossier = ClientServiceSuivi.objects.create(client=self.client_model, type_service=self.svc, montant=100)
+        self.task = DossierTask.objects.create(dossier=self.dossier, titre="Déposer la TVA")
+
+    def test_admin_reply_keeps_service_and_task_context(self):
+        res = self.client.post(
+            "/api/admin/client_messages",
+            data=json.dumps({
+                "client": str(self.client_model.id), "text": "Bien reçu",
+                "dossier": str(self.dossier.id), "service": str(self.svc.id), "task": str(self.task.id),
+            }),
+            content_type="application/json",
+            **self.h,
+        )
+        self.assertEqual(res.status_code, 200)
+        msg = ClientMessage.objects.get(direction="admin")
+        self.assertEqual(msg.dossier_id, self.dossier.id)
+        self.assertEqual(msg.service_id, self.svc.id)
+        self.assertEqual(msg.task_id, self.task.id)
+
+    def test_admin_reject_task_of_another_client(self):
+        other = Client.objects.create(name="Autre", email="autre@test.tn", phone="2")
+        other_dossier = ClientServiceSuivi.objects.create(client=other, type_service=self.svc)
+        other_task = DossierTask.objects.create(dossier=other_dossier, titre="Autre")
+        res = self.client.post(
+            "/api/admin/client_messages",
+            data=json.dumps({"client": str(self.client_model.id), "text": "x", "task": str(other_task.id)}),
+            content_type="application/json",
+            **self.h,
+        )
+        self.assertEqual(res.status_code, 400)
+
+    def test_admin_message_filters_by_dossier_service_task(self):
+        ClientMessage.objects.create(client=self.client_model, direction="client", text="bonjour", dossier=self.dossier, service=self.svc, task=self.task)
+        ClientMessage.objects.create(client=self.client_model, direction="client", text="général")
+        for qs, expected in [
+            (f"dossier={self.dossier.id}", 1),
+            (f"service={self.svc.id}", 1),
+            (f"task={self.task.id}", 1),
+            ("dossier=999", 0),
+        ]:
+            res = self.client.get(f"/api/admin/client_messages?{qs}", **self.h)
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(len(res.json()["items"]), expected)
+
+    def test_admin_message_detail_returns_thread_and_context(self):
+        m1 = ClientMessage.objects.create(client=self.client_model, direction="client", text="Où en est la TVA ?", dossier=self.dossier, service=self.svc, task=self.task)
+        ClientMessage.objects.create(client=self.client_model, direction="admin", text="Déposée.", dossier=self.dossier, service=self.svc, task=self.task)
+        res = self.client.get(f"/api/admin/detail/client_messages/{m1.id}", **self.h)
+        self.assertEqual(res.status_code, 200)
+        item = res.json()["item"]
+        self.assertEqual(len(item["thread"]), 2)
+        self.assertEqual(item["service_id"], self.svc.id)
+        self.assertEqual(item["task_id"], self.task.id)
+
+
+@override_settings(ADMIN_TOKEN="secret-test")
+class AdminExplorerTests(TestCase):
+    def setUp(self):
+        self.h = {"HTTP_AUTHORIZATION": "Bearer secret-test"}
+        self.client_model = Client.objects.create(name="Doe Jane", email="j@test.tn", phone="123")
+        self.svc = Service.objects.create(title="Fiscalité", slug="fiscal", short_desc="f", description="x")
+        self.dossier = ClientServiceSuivi.objects.create(client=self.client_model, type_service=self.svc, montant=100)
+        DossierTask.objects.create(dossier=self.dossier, titre="Déposer la TVA")
+
+    def test_explorer_requires_token(self):
+        self.assertEqual(self.client.get("/api/admin/explorer").status_code, 401)
+
+    def test_explorer_lists_clients_with_dossier_count(self):
+        res = self.client.get("/api/admin/explorer", **self.h)
+        self.assertEqual(res.status_code, 200)
+        clients = res.json()["clients"]
+        self.assertEqual(len(clients), 1)
+        self.assertEqual(clients[0]["dossier_count"], 1)
+
+    def test_explorer_client_dossiers_with_counts(self):
+        res = self.client.get(f"/api/admin/explorer/{self.client_model.id}", **self.h)
+        self.assertEqual(res.status_code, 200)
+        dossiers = res.json()["dossiers"]
+        self.assertEqual(len(dossiers), 1)
+        self.assertEqual(dossiers[0]["task_count"], 1)
+        self.assertEqual(dossiers[0]["declaration_count"], 0)
+        self.assertEqual(dossiers[0]["payment_count"], 0)
+
+    def test_explorer_detail_includes_declarations_and_payments(self):
+        DeclarationFiscale.objects.create(
+            client=self.client_model, dossier=self.dossier,
+            type_declaration="mensuelle", periode="Juillet 2026", date_echeance_legale="2026-08-20",
+        )
+        Payment.objects.create(client=self.client_model, dossier=self.dossier, amount=100, date="2026-08-01")
+        res = self.client.get(f"/api/admin/detail/client_service_suivis/{self.dossier.id}", **self.h)
+        self.assertEqual(res.status_code, 200)
+        item = res.json()["item"]
+        self.assertEqual(len(item["declarations"]), 1)
+        self.assertEqual(len(item["payments"]), 1)

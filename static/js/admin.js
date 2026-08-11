@@ -207,6 +207,7 @@ const BalanceAdmin = (() => {
     payments: [
       { key: "id", label: "N°" },
       { key: "client_name", label: "Client" },
+      { key: "dossier_service", label: "Dossier" },
       { key: "amount", label: "Montant (TND)" },
       { key: "date", label: "Date" },
       { key: "status", label: "Statut" },
@@ -379,6 +380,10 @@ const BalanceAdmin = (() => {
 
   async function loadTab(tab) {
     const wrap = document.getElementById("tab-content");
+    if (tab === "explorer") {
+      loadExplorer();
+      return;
+    }
     const detail = DETAIL_TABLES.includes(tab);
     const liveBtn = `<button id="live-btn" class="btn btn-sm" onclick="BalanceAdmin.toggleLive()">Temps réel : OFF</button>`;
     let toolbar = "";
@@ -389,6 +394,15 @@ const BalanceAdmin = (() => {
         <select id="tm-followup" onchange="BalanceAdmin.applyFilters()"><option value="">Tous les suivis de service</option></select>
         ${liveBtn}
       </div>`;
+    } else if (tab === "client_messages") {
+      toolbar = `<div class="tab-toolbar">
+        <select id="msg-client" onchange="BalanceAdmin.applyFilters()"><option value="">Tous les clients</option></select>
+        <select id="msg-dossier" onchange="BalanceAdmin.applyFilters()"><option value="">Tous les dossiers</option></select>
+        <select id="msg-service" onchange="BalanceAdmin.applyFilters()"><option value="">Tous les services</option></select>
+        <select id="msg-task" onchange="BalanceAdmin.applyFilters()"><option value="">Toutes les tâches</option></select>
+        <input id="id-search" placeholder="Filtrer par N° (ID)…" oninput="BalanceAdmin.applyFilters()" />
+        ${liveBtn}
+      </div>`;
     } else if (detail) {
       toolbar = `<div class="tab-toolbar"><input id="id-search" placeholder="Filtrer par N° (ID)…" oninput="BalanceAdmin.applyFilters()" /><small>Recherche par identifiant du dossier / service / tâche</small>${liveBtn}</div>`;
     } else {
@@ -397,6 +411,7 @@ const BalanceAdmin = (() => {
     wrap.innerHTML = `<div id="tab-toolbar">${toolbar}</div><div id="tab-table"><p>Chargement…</p></div>`;
     try {
       if (tab === "dossier_tasks") await populateTaskFilters();
+      if (tab === "client_messages") await populateMessageFilters();
       const data = await api(`/api/admin/${tab}`);
       renderTable(tab, data.items || []);
       setLive(true);
@@ -421,6 +436,30 @@ const BalanceAdmin = (() => {
     } catch (e) {}
   }
 
+  async function populateMessageFilters() {
+    const cSel = document.getElementById("msg-client");
+    const dSel = document.getElementById("msg-dossier");
+    const sSel = document.getElementById("msg-service");
+    const tSel = document.getElementById("msg-task");
+    if (!cSel) return;
+    try {
+      const clients = await api("/api/admin/clients");
+      cSel.innerHTML = `<option value="">Tous les clients</option>${(clients.items || []).map((c) => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join("")}`;
+    } catch (e) {}
+    try {
+      const dossiers = await api("/api/admin/client_service_suivis");
+      dSel.innerHTML = `<option value="">Tous les dossiers</option>${(dossiers.items || []).map((d) => `<option value="${d.id}">${escapeHtml(d.client_name + " — " + d.service_title + " (N°" + d.id + ")")}</option>`).join("")}`;
+    } catch (e) {}
+    try {
+      const services = await api("/api/admin/types_service");
+      sSel.innerHTML = `<option value="">Tous les services</option>${(services.items || []).map((s) => `<option value="${s.id}">${escapeHtml(s.title)}</option>`).join("")}`;
+    } catch (e) {}
+    try {
+      const tasks = await api("/api/admin/dossier_tasks");
+      tSel.innerHTML = `<option value="">Toutes les tâches</option>${(tasks.items || []).map((t) => `<option value="${t.id}">${escapeHtml(t.client_name + " — " + t.titre + " (N°" + t.id + ")")}</option>`).join("")}`;
+    } catch (e) {}
+  }
+
   async function applyFilters() {
     const wrap = document.getElementById("tab-table");
     if (!wrap) return;
@@ -429,10 +468,18 @@ const BalanceAdmin = (() => {
       const c = document.getElementById("tm-client");
       const st = document.getElementById("tm-statut");
       const f = document.getElementById("tm-followup");
+      const msgC = document.getElementById("msg-client");
+      const msgD = document.getElementById("msg-dossier");
+      const msgS = document.getElementById("msg-service");
+      const msgT = document.getElementById("msg-task");
       const id = document.getElementById("id-search");
       if (c && c.value) qs.push("client=" + encodeURIComponent(c.value));
       if (st && st.value) qs.push("statut=" + encodeURIComponent(st.value));
       if (f && f.value) qs.push("followup=" + encodeURIComponent(f.value));
+      if (msgC && msgC.value) qs.push("client=" + encodeURIComponent(msgC.value));
+      if (msgD && msgD.value) qs.push("dossier=" + encodeURIComponent(msgD.value));
+      if (msgS && msgS.value) qs.push("service=" + encodeURIComponent(msgS.value));
+      if (msgT && msgT.value) qs.push("task=" + encodeURIComponent(msgT.value));
       if (id && id.value.trim()) qs.push("q=" + encodeURIComponent(id.value.trim()));
       const data = await api(`/api/admin/${currentTab}${qs.length ? "?" + qs.join("&") : ""}`);
       renderTable(currentTab, data.items || []);
@@ -596,13 +643,18 @@ const BalanceAdmin = (() => {
         ).join("");
         html = `
           <h3>Messagerie — ${escapeHtml(it.client_name)}</h3>
-          <p class="muted-sm">Contexte : ${escapeHtml(it.context_label)}</p>
+          <p class="muted-sm">Contexte : <span class="msg-context">${escapeHtml(it.context_label)}</span></p>
+          <table class="admin-table" style="max-width:560px">
+            <tr><td>Dossier</td><td>${it.dossier_id ? "N°" + it.dossier_id + " — " + escapeHtml(it.dossier_service) : "—"}</td></tr>
+            <tr><td>Service</td><td>${it.service_id ? "N°" + it.service_id + " — " + escapeHtml(it.service_title) : "—"}</td></tr>
+            <tr><td>Tâche</td><td>${it.task_id ? "N°" + it.task_id + " — " + escapeHtml(it.task_title) : "—"}</td></tr>
+          </table>
           <div class="thread-box">${msgs || '<p class="muted-sm">Aucun message.</p>'}</div>
           <div class="form-group" style="margin-top:12px">
             <label for="reply-text">Réponse du cabinet</label>
             <textarea id="reply-text" rows="2" placeholder="Votre réponse…"></textarea>
           </div>
-          <button class="btn" onclick="BalanceAdmin.replyMessage(${it.client_id}, ${it.dossier_id || "null"})">Envoyer la réponse</button>`;
+          <button class="btn" onclick="BalanceAdmin.replyMessage(${it.client_id}, ${it.dossier_id || "null"}, ${it.service_id || "null"}, ${it.task_id || "null"})">Envoyer la réponse</button>`;
       }
       wrap.innerHTML = html;
       if (it.type === "service") populateParentSelect(id, it.parent_id);
@@ -806,7 +858,7 @@ const BalanceAdmin = (() => {
     } catch (e) {}
   }
 
-  async function replyMessage(clientId, dossierId) {
+  async function replyMessage(clientId, dossierId, serviceId, taskId) {
     const textEl = document.getElementById("reply-text");
     const text = (textEl.value || "").trim();
     if (!text) {
@@ -815,6 +867,8 @@ const BalanceAdmin = (() => {
     }
     const payload = { client: clientId, text };
     if (dossierId) payload.dossier = String(dossierId);
+    if (serviceId) payload.service = String(serviceId);
+    if (taskId) payload.task = String(taskId);
     try {
       await api(`/api/admin/client_messages`, { method: "POST", body: JSON.stringify(payload) });
       textEl.value = "";
@@ -822,6 +876,104 @@ const BalanceAdmin = (() => {
       if (currentDetail) showDetail(currentDetail.tab, currentDetail.id);
     } catch (e) {
       alert(e.message);
+    }
+  }
+
+  let explorerClientId = null;
+
+  async function loadExplorer() {
+    const wrap = document.getElementById("tab-content");
+    wrap.innerHTML = `<div id="tab-toolbar"><button class="btn btn-sm" onclick="BalanceAdmin.loadExplorer()">⟳ Recharger</button><small class="muted-sm" style="margin-left:10px">Explorateur : client → dossiers → détail complet (tâches, suivis, préfactures, pièces jointes, messages, déclarations, paiements).</small></div><div id="tab-table"><p>Chargement…</p></div>`;
+    explorerClientId = null;
+    try {
+      const data = await api("/api/admin/explorer");
+      renderExplorerClients(data.clients || []);
+    } catch (e) {
+      document.getElementById("tab-table").innerHTML = `<div class="alert show alert-error">${e.message}</div>`;
+    }
+  }
+
+  function renderExplorerClients(clients) {
+    const wrap = document.getElementById("tab-table");
+    if (!clients.length) {
+      wrap.innerHTML = '<p style="color:#64748b">Aucun client pour le moment.</p>';
+      return;
+    }
+    wrap.innerHTML = `<table class="admin-table"><thead><tr><th>Client</th><th>Contact</th><th>Dossiers</th><th></th></tr></thead><tbody>
+      ${clients.map((c) => `<tr>
+        <td><strong>${escapeHtml(c.name)}</strong></td>
+        <td>${escapeHtml(c.email)}${c.phone ? " · " + escapeHtml(c.phone) : ""}</td>
+        <td><span class="badge ${c.dossier_count ? "nouveau" : "confirme"}">${c.dossier_count}</span></td>
+        <td><button class="btn btn-sm" onclick="BalanceAdmin.explorerDossiers(${c.id})">Explorer ses dossiers</button></td>
+      </tr>`).join("")}
+    </tbody></table>`;
+  }
+
+  async function explorerDossiers(clientId) {
+    explorerClientId = clientId;
+    const wrap = document.getElementById("tab-table");
+    wrap.innerHTML = '<p>Chargement…</p>';
+    try {
+      const data = await api(`/api/admin/explorer/${clientId}`);
+      const c = data.client;
+      const dossiers = data.dossiers || [];
+      document.getElementById("tab-toolbar").innerHTML = `<button class="btn btn-sm" onclick="BalanceAdmin.loadExplorer()">← Liste des clients</button> <strong>${escapeHtml(c.name)}</strong> <small class="muted-sm">${c.email}</small>`;
+      const rows = dossiers.map((d) => `<tr>
+        <td><strong>N°${d.id}</strong></td>
+        <td>${escapeHtml(d.service)}</td>
+        <td>${d.montant} TND · ${d.frequence}</td>
+        <td><span class="badge ${d.statut_service === "Clôturé" ? "confirme" : "nouveau"}">${d.statut_service}</span></td>
+        <td><span class="badge ${d.statut_paiement === "Payé" ? "confirme" : "nouveau"}">${d.statut_paiement}</span></td>
+        <td>${d.date_echeance}</td>
+        <td>${d.task_count} tâches · ${d.followup_count} suivis · ${d.prefacture_count} préfactures · ${d.attachment_count} pièces · ${d.message_count} messages · ${d.declaration_count} déclarations · ${d.payment_count} paiements</td>
+        <td><button class="btn btn-sm" onclick="BalanceAdmin.explorerDossier(${d.id})">Ouvrir</button></td>
+      </tr>`).join("");
+      wrap.innerHTML = `<table class="admin-table"><thead><tr><th>N°</th><th>Service</th><th>Prix / Fréquence</th><th>Dossier</th><th>Paiement</th><th>Échéance</th><th>Éléments liés</th><th></th></tr></thead><tbody>
+        ${rows || '<tr><td colspan="8"><p style="color:#64748b">Aucun dossier pour ce client.</p></td></tr>'}
+      </tbody></table>`;
+    } catch (e) {
+      wrap.innerHTML = `<div class="alert show alert-error">${e.message}</div>`;
+    }
+  }
+
+  async function explorerDossier(dossierId) {
+    const wrap = document.getElementById("tab-table");
+    wrap.innerHTML = '<p>Chargement…</p>';
+    try {
+      const data = await api(`/api/admin/detail/client_service_suivis/${dossierId}`);
+      const it = data.item;
+      const tasks = it.tasks.length ? `<ul class="task-list">${it.tasks.map((t) => `<li>${statusBadge(t.statut)} ${escapeHtml(t.titre)} — <small>${t.date_echeance} · ${t.repetition}</small></li>`).join("")}</ul>` : '<p class="muted-sm">Aucune tâche.</p>';
+      const followups = it.service_followups.length ? `<ul class="task-list">${it.service_followups.map((s) => `<li>${statusBadge(s.status)} ${escapeHtml(s.service)} — <small>du ${s.start_date} au ${s.due_date}</small></li>`).join("")}</ul>` : '<p class="muted-sm">Aucun suivi de service.</p>';
+      const prefactures = it.prefactures.length ? `<ul class="task-list">${it.prefactures.map((p) => `<li>${escapeHtml(p.numero)} — ${p.montant_ttc} TND — ${statusBadge(p.statut)}</li>`).join("")}</ul>` : '<p class="muted-sm">Aucune préfacture.</p>';
+      const attachments = it.attachments.length ? `<ul class="task-list">${it.attachments.map((a) => `<li><a href="${a.url}" target="_blank" rel="noopener">${escapeHtml(a.name)}</a> <small>(${a.size} · ${a.category} · ${a.uploaded_by})</small></li>`).join("")}</ul>` : '<p class="muted-sm">Aucune pièce jointe.</p>';
+      const messages = it.messages.length ? `<div class="thread-box">${it.messages.map((m) => `<div class="msg ${m.direction === "admin" ? "msg-admin" : "msg-client"}"><strong>${m.direction === "admin" ? "Cabinet" : escapeHtml(it.client_name)}</strong> — <small>${m.created_at}</small><p>${escapeHtml(m.text)}</p></div>`).join("")}</div>` : '<p class="muted-sm">Aucun message.</p>';
+      const declarations = it.declarations.length ? `<ul class="task-list">${it.declarations.map((df) => `<li>${statusBadge(df.statut)} ${escapeHtml(df.type_declaration)} — ${escapeHtml(df.periode)} · éch. ${df.date_echeance_legale}${df.montant_a_payer !== "0.000" ? " · " + df.montant_a_payer + " TND" : ""}</li>`).join("")}</ul>` : '<p class="muted-sm">Aucune déclaration liée.</p>';
+      const payments = it.payments.length ? `<ul class="task-list">${it.payments.map((p) => `<li>${p.amount} TND — ${p.date} — ${statusBadge(p.status)}</li>`).join("")}</ul>` : '<p class="muted-sm">Aucun paiement lié.</p>';
+      document.getElementById("tab-toolbar").innerHTML = `<button class="btn btn-sm" onclick="BalanceAdmin.explorerDossiers(${it.client_id})">← Retour aux dossiers du client</button> <strong>Dossier N°${it.id}</strong>`;
+      wrap.innerHTML = `
+        <div class="dossier-card">
+          <div class="dossier-head">
+            <div>
+              <strong>N°${it.id} — ${escapeHtml(it.service)}</strong>
+              <div class="dossier-meta">Client : ${escapeHtml(it.client_name)} (${escapeHtml(it.client_contact)}) · ${it.montant} TND · ${it.frequence} · Échéance ${it.date_echeance}</div>
+            </div>
+            <div class="dossier-status">
+              <span class="${it.statut_service === "Clôturé" ? "badge confirme" : "badge nouveau"}">${it.statut_service}</span>
+              <span class="${it.statut_paiement === "Payé" ? "badge confirme" : "badge nouveau"}">${it.statut_paiement}</span>
+            </div>
+          </div>
+          ${it.commentaire ? `<p class="muted-sm">${escapeHtml(it.commentaire)}</p>` : ""}
+          ${it.service_note ? `<p class="muted-sm"><strong>Note du service :</strong> ${escapeHtml(it.service_note)}</p>` : ""}
+          <div class="dossier-block"><strong>Tâches</strong>${tasks}</div>
+          <div class="dossier-block"><strong>Suivi du service</strong>${followups}</div>
+          <div class="dossier-block"><strong>Déclarations fiscales</strong>${declarations}</div>
+          <div class="dossier-block"><strong>Préfactures</strong>${prefactures}</div>
+          <div class="dossier-block"><strong>Paiements</strong>${payments}</div>
+          <div class="dossier-block"><strong>Pièces jointes</strong>${attachments}</div>
+          <div class="dossier-block"><strong>Messagerie</strong>${messages}</div>
+        </div>`;
+    } catch (e) {
+      wrap.innerHTML = `<div class="alert show alert-error">${e.message}</div>`;
     }
   }
 
@@ -833,5 +985,5 @@ const BalanceAdmin = (() => {
     }
   });
 
-  return { login, logout, switchTab, saveField, toggleCreate, showDetail, closeDetail, applyFilters, toggleLive, addSubService, deleteService, replyMessage };
+  return { login, logout, switchTab, saveField, toggleCreate, showDetail, closeDetail, applyFilters, toggleLive, addSubService, deleteService, replyMessage, loadExplorer, explorerDossiers, explorerDossier };
 })();

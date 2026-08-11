@@ -434,6 +434,10 @@ class Payment(models.Model):
         ("annule", "Annulé"),
     ]
     client = models.ForeignKey(Client, on_delete=models.CASCADE, verbose_name="Client")
+    dossier = models.ForeignKey(
+        ClientServiceSuivi, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="payments", verbose_name="Dossier lié",
+    )
     amount = models.DecimalField(max_digits=10, decimal_places=2, verbose_name="Montant (TND)")
     date = models.DateField(verbose_name="Date")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="en_attente", verbose_name="Statut")
@@ -452,6 +456,10 @@ class Payment(models.Model):
     @property
     def client_name(self):
         return self.client.name
+
+    @property
+    def dossier_service(self):
+        return f"{self.dossier.service_title} (N°{self.dossier.id})" if self.dossier else "—"
 
 
 class ServiceFollowUp(models.Model):
@@ -524,6 +532,10 @@ class DeclarationFiscale(models.Model):
     ]
 
     client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="declarations", verbose_name="Client")
+    dossier = models.ForeignKey(
+        ClientServiceSuivi, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="declarations", verbose_name="Dossier lié",
+    )
     type_declaration = models.CharField(max_length=20, choices=TYPE_DECLARATION_CHOICES, verbose_name="Type de déclaration")
     periode = models.CharField(max_length=80, verbose_name="Période (ex : Mois de Juillet 2026 / Exercice 2025)")
     date_echeance_legale = models.DateField(verbose_name="Date limite légale")
@@ -544,3 +556,7 @@ class DeclarationFiscale(models.Model):
     @property
     def client_name(self):
         return self.client.display_name
+
+    @property
+    def dossier_service(self):
+        return f"{self.dossier.service_title} (N°{self.dossier.id})" if self.dossier else "—"

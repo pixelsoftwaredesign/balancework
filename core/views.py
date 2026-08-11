@@ -673,7 +673,7 @@ TABLES = {
     "appointments": (Appointment, ["id", "name", "email", "phone", "date", "time", "notes", "status"], "service_title"),
     "messages": (Message, ["id", "name", "email", "phone", "subject", "message", "status", "created_at"], None),
     "clients": (Client, ["id", "name", "email", "phone", "company", "notes", "created_at"], None),
-    "payments": (Payment, ["id", "client_name", "amount", "date", "status", "method", "notes", "created_at"], None),
+    "payments": (Payment, ["id", "client_name", "dossier_service", "amount", "date", "status", "method", "notes", "created_at"], None),
     "service_followups": (ServiceFollowUp, ["id", "client_name", "service_title", "dossier_id", "dossier_label", "status", "start_date", "due_date", "notes", "created_at"], None),
     "types_service": (Service, ["id", "title", "slug", "short_desc", "parent_title"], None),
     "client_service_suivis": (ClientServiceSuivi, ["id", "client_name", "service_title", "montant", "statut_paiement", "statut_service", "date_echeance", "frequence", "commentaire", "service_note"], None),
@@ -681,7 +681,7 @@ TABLES = {
     "dossier_tasks": (DossierTask, ["id", "client_name", "dossier_service", "followup_title", "titre", "statut", "date_echeance", "repetition"], None),
     "prefactures": (Prefacture, ["id", "client_name", "dossier_service", "numero", "date", "montant_ht", "taux_tva", "montant_ttc", "statut"], None),
     "dossier_attachments": (DossierAttachment, ["id", "client_name", "dossier_service", "original_name", "category", "size", "uploaded_by", "created_at"], None),
-    "declarations": (DeclarationFiscale, ["id", "client_name", "type_declaration", "periode", "date_echeance_legale", "statut", "numero_quittance_ou_tej", "montant_a_payer", "notes_collaborateur"], None),
+    "declarations": (DeclarationFiscale, ["id", "client_name", "dossier_service", "type_declaration", "periode", "date_echeance_legale", "statut", "numero_quittance_ou_tej", "montant_a_payer", "notes_collaborateur"], None),
 }
 
 
@@ -697,7 +697,7 @@ def api_admin(request, table):
     if request.method == "GET":
         queryset = model.objects.all()
         q = request.GET.get("q", "").strip()
-        if q and table in ("client_service_suivis", "service_followups", "dossier_tasks", "declarations"):
+        if q and table in ("client_service_suivis", "service_followups", "dossier_tasks", "declarations", "client_messages"):
             try:
                 queryset = queryset.filter(id=int(q))
             except ValueError:
@@ -826,6 +826,61 @@ def api_admin(request, table):
     return _json({"ok": False, "error": "Méthode non autorisée"}, 405)
 
 
+@csrf_exempt
+def api_admin_explorer(request, client_id=None):
+    if not _authorized(request):
+        return _json({"ok": False, "error": "Non autorisé"}, 401)
+    if client_id is None:
+        clients = [
+            {
+                "id": c.id,
+                "name": c.display_name,
+                "email": c.email,
+                "phone": c.phone,
+                "dossier_count": c.services.count(),
+            }
+            for c in Client.objects.prefetch_related("services").order_by("name", "id")
+        ]
+        return _json({"ok": True, "clients": clients})
+    client = Client.objects.filter(pk=client_id).first()
+    if not client:
+        return _json({"ok": False, "error": "Client introuvable"}, 404)
+    dossiers = []
+    for d in ClientServiceSuivi.objects.filter(client=client).prefetch_related("tasks", "prefactures", "attachments", "messages", "declarations", "payments"):
+        dossiers.append({
+            "id": d.id,
+            "service": d.service_title,
+            "service_id": d.type_service.id if d.type_service else None,
+            "montant": str(d.montant),
+            "frequence": d.get_frequence_display(),
+            "statut_paiement": d.get_statut_paiement_display(),
+            "statut_service": d.get_statut_service_display(),
+            "date_echeance": d.date_echeance.strftime("%d/%m/%Y") if d.date_echeance else "—",
+            "commentaire": d.commentaire,
+            "task_count": d.tasks.count(),
+            "followup_count": d.service_followups.count(),
+            "prefacture_count": d.prefactures.count(),
+            "attachment_count": d.attachments.count(),
+            "message_count": d.messages.count(),
+            "declaration_count": d.declarations.count(),
+            "payment_count": d.payments.count(),
+        })
+    return _json({
+        "ok": True,
+        "client": {
+            "id": client.id,
+            "name": client.display_name,
+            "email": client.email,
+            "phone": client.phone,
+            "matricule_fiscale": client.matricule_fiscale,
+            "cin": client.cin,
+            "adresse": client.adresse,
+            "notes": client.notes,
+        },
+        "dossiers": dossiers,
+    })
+
+
 def _task_payload(t):
     return {
         "id": t.id,
@@ -872,6 +927,48 @@ def _dossier_payload(d):
                 "tasks": [_task_payload(t) for t in s.dossier_tasks],
             }
             for s in d.service_followups.all()
+        ],
+        "attachments": [
+            {
+                "id": a.id,
+                "name": a.original_name,
+                "url": a.file.url,
+                "size": a.size_display,
+                "category": a.category,
+                "uploaded_by": a.get_uploaded_by_display(),
+            }
+            for a in d.attachments.all()
+        ],
+        "messages": [
+            {
+                "id": m.id,
+                "direction": m.direction,
+                "text": m.text,
+                "created_at": m.created_at.strftime("%d/%m/%Y %H:%M"),
+                "context_label": m.context_label,
+            }
+            for m in d.messages.all()
+        ],
+        "declarations": [
+            {
+                "id": df.id,
+                "type_declaration": df.get_type_declaration_display(),
+                "periode": df.periode,
+                "date_echeance_legale": df.date_echeance_legale.strftime("%d/%m/%Y"),
+                "statut": df.get_statut_display(),
+                "montant_a_payer": str(df.montant_a_payer),
+                "numero_quittance_ou_tej": df.numero_quittance_ou_tej or "—",
+            }
+            for df in d.declarations.all()
+        ],
+        "payments": [
+            {
+                "id": p.id,
+                "amount": str(p.amount),
+                "date": p.date.strftime("%d/%m/%Y"),
+                "status": p.get_status_display(),
+            }
+            for p in d.payments.all()
         ],
     }
 
@@ -954,6 +1051,7 @@ def api_admin_detail(request, table, obj_id):
             "client_name": obj.client.display_name,
             "dossier_id": obj.dossier_id,
             "dossier_service": obj.dossier_service,
+            "service_id": obj.service_id,
             "service_title": obj.service_title,
             "task_id": obj.task_id,
             "task_title": obj.task_title,
@@ -1155,6 +1253,11 @@ def _api_admin_create(request, table):
             client = Client.objects.get(pk=int(body.get("client", 0)))
         except (ValueError, TypeError, Client.DoesNotExist):
             return _json({"ok": False, "error": "Client introuvable."}, 400)
+        dossier = None
+        if (body.get("dossier") or "").strip().isdigit():
+            dossier = ClientServiceSuivi.objects.filter(pk=int(body["dossier"]), client=client).first()
+            if not dossier:
+                return _json({"ok": False, "error": "Dossier introuvable pour ce client."}, 400)
         type_declaration = body.get("type_declaration", "")
         statut = body.get("statut", "a_faire")
         if type_declaration not in {s for s, _ in DeclarationFiscale.TYPE_DECLARATION_CHOICES}:
@@ -1175,6 +1278,7 @@ def _api_admin_create(request, table):
             return _json({"ok": False, "error": "Montant invalide."}, 400)
         decl = DeclarationFiscale.objects.create(
             client=client,
+            dossier=dossier,
             type_declaration=type_declaration,
             periode=periode,
             date_echeance_legale=echeance,
@@ -1185,18 +1289,47 @@ def _api_admin_create(request, table):
         )
         return _json({"ok": True, "id": decl.id})
 
-    if table == "service_followups":
+    if table == "payments":
         try:
             client = Client.objects.get(pk=int(body.get("client", 0)))
         except (ValueError, TypeError, Client.DoesNotExist):
             return _json({"ok": False, "error": "Client introuvable."}, 400)
         dossier = None
-        dossier_id = body.get("dossier", 0)
-        if dossier_id:
-            try:
-                dossier = ClientServiceSuivi.objects.get(pk=int(dossier_id))
-            except (ValueError, TypeError, ClientServiceSuivi.DoesNotExist):
+        if (body.get("dossier") or "").strip().isdigit():
+            dossier = ClientServiceSuivi.objects.filter(pk=int(body["dossier"]), client=client).first()
+            if not dossier:
+                return _json({"ok": False, "error": "Dossier introuvable pour ce client."}, 400)
+        try:
+            amount = float(body.get("amount", 0))
+        except ValueError:
+            return _json({"ok": False, "error": "Montant invalide."}, 400)
+        pay_date = (body.get("date") or "").strip() or date.today().isoformat()
+        try:
+            date.fromisoformat(pay_date)
+        except ValueError:
+            return _json({"ok": False, "error": "Date invalide (AAAA-MM-JJ)."}, 400)
+        status = body.get("status", "en_attente")
+        if status not in {s for s, _ in Payment.STATUS_CHOICES}:
+            return _json({"ok": False, "error": "Statut invalide."}, 400)
+        obj = Payment.objects.create(
+            client=client, dossier=dossier, amount=amount, date=pay_date,
+            status=status, method=(body.get("method") or "").strip(),
+            notes=(body.get("notes") or "").strip(),
+        )
+        return _json({"ok": True, "id": obj.id})
+
+    if table == "service_followups":
+        client = None
+        if (body.get("client") or "").strip().isdigit():
+            client = Client.objects.filter(pk=int(body["client"])).first()
+        dossier = None
+        if (body.get("dossier") or "").strip().isdigit():
+            dossier = ClientServiceSuivi.objects.filter(pk=int(body["dossier"])).first()
+            if not dossier:
                 return _json({"ok": False, "error": "Dossier associé introuvable."}, 400)
+            client = dossier.client
+        if not client:
+            return _json({"ok": False, "error": "Client introuvable."}, 400)
         try:
             service = Service.objects.get(pk=int(body.get("type_service", 0)))
         except (ValueError, TypeError, Service.DoesNotExist):
