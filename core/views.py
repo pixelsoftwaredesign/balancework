@@ -72,7 +72,7 @@ def _attachment_payload(att, request=None):
 
 def sitemap(request):
     base = settings.SITE_URL
-    pages = ["", "services/", "devis/", "contact/", "rendezvous/"]
+    pages = ["", "services/", "devis/", "contact/", "rendezvous/", "espace-client/", "espace-entreprise/"]
     urls = "\n".join(
         f'<url><loc>{base}{p}</loc><changefreq>monthly</changefreq><priority>{"1.0" if not p else "0.8"}</priority></url>'
         for p in pages
@@ -541,6 +541,191 @@ def api_client_entreprise(request):
                 setattr(entreprise, field, val)
         entreprise.save()
         return _json({"ok": True, "message": "Entreprise mise à jour.", "entreprise": _entreprise_payload(entreprise)})
+    return _json({"ok": False, "error": "Méthode non autorisée"}, 405)
+
+
+def _ecriture_payload(e):
+    return {
+        "id": e.id,
+        "journal": e.get_journal_display(),
+        "numero_piece": e.numero_piece,
+        "date": e.date.strftime("%d/%m/%Y"),
+        "libelle": e.libelle,
+        "statut": e.statut,
+        "total_debit": str(e.total_debit),
+        "total_credit": str(e.total_credit),
+        "equilibree": e.est_equilibree,
+        "nb_lignes": e.lignes.count(),
+        "lignes": [
+            {"id": l.id, "compte_id": l.compte_id, "numero": l.compte.numero, "intitule": l.compte.intitule, "libelle": l.libelle, "debit": str(l.debit), "credit": str(l.credit)}
+            for l in e.lignes.select_related("compte").all()
+        ],
+    }
+
+
+@csrf_exempt
+def api_client_comptabilite(request):
+    """Espace entreprise (tenant) : comptabilité complète de l'entreprise du client connecté."""
+    client = _client_from_request(request)
+    if not client:
+        return _json({"ok": False, "error": "Non autorisé"}, 401)
+    if not hasattr(client, "entreprise"):
+        return _json({"ok": False, "error": "Aucune entreprise (tenant) n'est associée à votre compte. Contactez votre cabinet."}, 404)
+    entreprise = client.entreprise
+
+    if request.method == "GET":
+        return _json({
+            "ok": True,
+            "entreprise": _entreprise_payload(entreprise),
+            "plan": comptabilite.plan_tree(entreprise),
+            "plan_total": entreprise.comptes.count(),
+            "ecritures": [_ecriture_payload(e) for e in EcritureComptable.objects.filter(entreprise=entreprise).order_by("-date", "-id")],
+            "grand_livre": comptabilite.grand_livre(entreprise),
+            "bilan": comptabilite.bilan(entreprise),
+        })
+
+    if request.method == "DELETE":
+        body = _read_body(request)
+        kind = body.get("kind")
+        if kind == "ecriture":
+            try:
+                e = EcritureComptable.objects.get(pk=int(body.get("id", 0)), entreprise=entreprise)
+            except (ValueError, EcritureComptable.DoesNotExist):
+                return _json({"ok": False, "error": "Écriture introuvable."}, 404)
+            e.delete()
+            return _json({"ok": True, "message": "Pièce supprimée."})
+        if kind == "compte":
+            try:
+                c = CompteComptable.objects.get(pk=int(body.get("id", 0)), entreprise=entreprise)
+            except (ValueError, CompteComptable.DoesNotExist):
+                return _json({"ok": False, "error": "Compte introuvable."}, 404)
+            if c.enfants.exists():
+                return _json({"ok": False, "error": "Ce compte a des sous-comptes : supprimez-les d'abord."}, 400)
+            try:
+                c.delete()
+            except ProtectedError:
+                return _json({"ok": False, "error": "Ce compte est utilisé par des écritures : suppression impossible."}, 400)
+            return _json({"ok": True, "message": "Compte supprimé."})
+        return _json({"ok": False, "error": "Suppression non disponible."}, 400)
+
+    if request.method == "POST":
+        body = _read_body(request)
+        action = body.get("action")
+
+        if action == "ecriture_create":
+            try:
+                date_e = date.fromisoformat((body.get("date") or "").strip())
+            except ValueError:
+                return _json({"ok": False, "error": "Date invalide (AAAA-MM-JJ)."}, 400)
+            numero_piece = (body.get("numero_piece") or "").strip()
+            libelle = (body.get("libelle") or "").strip()
+            if not numero_piece or not libelle:
+                return _json({"ok": False, "error": "N° pièce et libellé requis."}, 400)
+            journal = body.get("journal", "od")
+            if journal not in {j for j, _ in EcritureComptable.JOURNAL_CHOICES}:
+                return _json({"ok": False, "error": "Journal invalide."}, 400)
+            lignes = body.get("lignes") or []
+            if len(lignes) < 2:
+                return _json({"ok": False, "error": "Une pièce doit avoir au moins deux lignes."}, 400)
+            rows = []
+            for i, ln in enumerate(lignes):
+                try:
+                    compte = CompteComptable.objects.get(pk=int(ln.get("compte", 0)), entreprise=entreprise)
+                except (ValueError, CompteComptable.DoesNotExist):
+                    return _json({"ok": False, "error": f"Compte invalide sur la ligne {i + 1}."}, 400)
+                try:
+                    debit = Decimal(str(ln.get("debit", 0) or 0))
+                    credit = Decimal(str(ln.get("credit", 0) or 0))
+                except Exception:
+                    return _json({"ok": False, "error": f"Montant invalide sur la ligne {i + 1}."}, 400)
+                if debit < 0 or credit < 0:
+                    return _json({"ok": False, "error": "Montants négatifs interdits."}, 400)
+                if debit == 0 and credit == 0:
+                    return _json({"ok": False, "error": f"Ligne {i + 1} : renseignez un débit ou un crédit."}, 400)
+                rows.append((compte, (ln.get("libelle") or "").strip()[:255], debit, credit))
+            if sum(r[2] for r in rows) != sum(r[3] for r in rows):
+                return _json({"ok": False, "error": "La pièce n'est pas équilibrée (total débit ≠ total crédit)."}, 400)
+            statut = body.get("statut", "brouillon")
+            if statut not in {s for s, _ in EcritureComptable.STATUT_CHOICES}:
+                return _json({"ok": False, "error": "Statut invalide."}, 400)
+            obj = EcritureComptable.objects.create(
+                entreprise=entreprise, journal=journal, numero_piece=numero_piece,
+                date=date_e, libelle=libelle, statut=statut,
+            )
+            for compte, lib, debit, credit in rows:
+                obj.lignes.create(compte=compte, libelle=lib, debit=debit, credit=credit)
+            return _json({"ok": True, "id": obj.id})
+
+        if action == "ecriture_statut":
+            try:
+                e = EcritureComptable.objects.get(pk=int(body.get("id", 0)), entreprise=entreprise)
+            except (ValueError, EcritureComptable.DoesNotExist):
+                return _json({"ok": False, "error": "Écriture introuvable."}, 404)
+            statut = body.get("statut")
+            if statut not in {s for s, _ in EcritureComptable.STATUT_CHOICES}:
+                return _json({"ok": False, "error": "Statut invalide."}, 400)
+            e.statut = statut
+            e.save(update_fields=["statut"])
+            return _json({"ok": True, "message": "Statut mis à jour."})
+
+        if action == "compte_create":
+            numero = (body.get("numero") or "").strip()
+            intitule = (body.get("intitule") or "").strip()
+            if not numero or not intitule:
+                return _json({"ok": False, "error": "Numéro et intitulé requis."}, 400)
+            if CompteComptable.objects.filter(entreprise=entreprise, numero=numero).exists():
+                return _json({"ok": False, "error": "Un compte existe déjà avec ce numéro."}, 400)
+            parent = None
+            parent_raw = str(body.get("parent") or "").strip()
+            if parent_raw.isdigit():
+                parent = CompteComptable.objects.filter(pk=int(parent_raw), entreprise=entreprise).first()
+                if not parent:
+                    return _json({"ok": False, "error": "Compte parent introuvable."}, 400)
+            obj = CompteComptable.objects.create(entreprise=entreprise, parent=parent, numero=numero, intitule=intitule)
+            return _json({"ok": True, "id": obj.id})
+
+        if action == "compte_update":
+            try:
+                c = CompteComptable.objects.get(pk=int(body.get("id", 0)), entreprise=entreprise)
+            except (ValueError, CompteComptable.DoesNotExist):
+                return _json({"ok": False, "error": "Compte introuvable."}, 404)
+            field = body.get("field")
+            value = body.get("value")
+            if field == "numero":
+                value = str(value).strip()
+                if not value:
+                    return _json({"ok": False, "error": "Numéro requis."}, 400)
+                if CompteComptable.objects.filter(entreprise=entreprise, numero=value).exclude(pk=c.pk).exists():
+                    return _json({"ok": False, "error": "Un compte existe déjà avec ce numéro."}, 400)
+            elif field == "intitule":
+                value = str(value)
+                if not value.strip():
+                    return _json({"ok": False, "error": "Intitulé requis."}, 400)
+            elif field == "active":
+                value = value in ("1", "true", "True", "on")
+            elif field == "parent":
+                raw = str(value).strip()
+                parent = None
+                if raw.isdigit():
+                    parent = CompteComptable.objects.filter(pk=int(raw), entreprise=entreprise).first()
+                    if not parent:
+                        return _json({"ok": False, "error": "Compte parent introuvable."}, 400)
+                    if parent.pk == c.pk:
+                        return _json({"ok": False, "error": "Un compte ne peut pas être son propre parent."}, 400)
+                    anc = parent
+                    while anc.parent_id:
+                        anc = anc.parent
+                        if anc.pk == c.pk:
+                            return _json({"ok": False, "error": "Le parent ne peut pas être un descendant de ce compte."}, 400)
+                value = parent
+            else:
+                return _json({"ok": False, "error": "Champ non modifiable"}, 400)
+            setattr(c, field, value)
+            c.save(update_fields=[field])
+            return _json({"ok": True, "message": "Compte mis à jour."})
+
+        return _json({"ok": False, "error": "Action inconnue"}, 400)
+
     return _json({"ok": False, "error": "Méthode non autorisée"}, 405)
 
 

@@ -15,6 +15,7 @@ urlpatterns = [
     path("rendezvous/", TemplateView.as_view(template_name="rendezvous.html"), name="rendezvous"),
     path("gestion/", TemplateView.as_view(template_name="admin.html"), name="admin_site"),
     path("espace-client/", TemplateView.as_view(template_name="espace_client.html"), name="espace_client"),
+    path("espace-entreprise/", TemplateView.as_view(template_name="espace_entreprise.html"), name="espace_entreprise"),
 
     # API publique
     path("api/services", views.api_services, name="api_services"),
@@ -36,6 +37,7 @@ urlpatterns = [
     path("api/client/attachments/<int:attachment_id>", views.api_client_attachment_delete, name="api_client_attachment_delete"),
     path("api/client/prefacture/<int:prefacture_id>", views.api_client_prefacture, name="api_client_prefacture"),
     path("api/client/messages", views.api_client_messages, name="api_client_messages"),
+    path("api/client/comptabilite", views.api_client_comptabilite, name="api_client_comptabilite"),
 
     # API admin (jeton Bearer)
     path("api/admin/dashboard", views.api_admin_dashboard, name="api_admin_dashboard"),

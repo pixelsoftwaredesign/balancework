@@ -35,6 +35,7 @@ PAGES = [
     ("/rendezvous/", "rendezvous/index.html"),
     ("/gestion/", "gestion/index.html"),
     ("/espace-client/", "espace-client/index.html"),
+    ("/espace-entreprise/", "espace-entreprise/index.html"),
 ]
 
 client = Client()
@@ -70,14 +71,15 @@ def build():
     )
     (OUT / "_redirects").write_text(
         "/services /services/\n/devis /devis/\n/contact /contact/\n"
-        "/rendezvous /rendezvous/\n/gestion /gestion/\n",
+        "/rendezvous /rendezvous/\n/gestion /gestion/\n"
+        "/espace-client /espace-client/\n/espace-entreprise /espace-entreprise/\n",
         encoding="utf-8",
     )
     print("OK static/ config.js _redirects")
 
 
 def inject_config(html):
-    for script in ["/static/js/main.js", "/static/js/admin.js"]:
+    for script in ["/static/js/main.js", "/static/js/admin.js", "/static/js/client.js", "/static/js/espace_entreprise.js"]:
         if script in html:
             html = html.replace(
                 f'<script src="{script}">',
