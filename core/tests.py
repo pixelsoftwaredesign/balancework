@@ -28,6 +28,7 @@ from .models import (
     StaffToken,
 )
 from .plan_comptable import seed_plan_comptable
+from .security.tokens import new_client_token
 
 
 class ApiServicesTests(TestCase):
@@ -687,3 +688,191 @@ class ClientAuthSecurityTests(TestCase):
         self.assertNotIn("password", json.dumps(res.json()))
         user = User.objects.get(email="hash@test.tn")
         self.assertNotEqual(user.password, "mdp12345678")
+
+
+@override_settings(ADMIN_TOKEN="secret-test")
+class ClientEntrepriseCrudAdminTests(TestCase):
+    """CRUD clients (admin) + entreprises tenant avec plan comptable seedé."""
+
+    def setUp(self):
+        self.h = {"HTTP_AUTHORIZATION": "Bearer secret-test"}
+
+    def test_creation_client_et_mise_a_jour_statut(self):
+        res = self.client.post("/api/admin/clients", data=json.dumps({
+            "name": "Tunisie", "prenom": "Trans", "email": "trans@admin.tn",
+            "phone": "22110011", "statut_client": "entreprise", "matricule_fiscale": "222333/7/A/M/000",
+        }), content_type="application/json", **self.h)
+        self.assertEqual(res.status_code, 200, res.json())
+        cid = res.json()["id"]
+        client = Client.objects.get(pk=cid)
+        self.assertEqual(client.statut_client, "entreprise")
+        self.assertEqual(client.display_name, "Trans Tunisie")
+        res = self.client.put("/api/admin/clients", data=json.dumps({
+            "id": cid, "field": "statut_client", "status": "personne_physique",
+        }), content_type="application/json", **self.h)
+        self.assertEqual(res.status_code, 200, res.json())
+        client.refresh_from_db()
+        self.assertEqual(client.statut_client, "personne_physique")
+
+    def test_creation_entreprise_seed_plan_et_unicite(self):
+        client = Client.objects.create(name="SARL", email="ent@admin.tn", phone="1", statut_client="entreprise")
+        res = self.client.post("/api/admin/entreprises", data=json.dumps({
+            "client": client.id, "raison_sociale": "Balance & Co SARL",
+            "forme_juridique": "sarl", "ville": "Tunis",
+        }), content_type="application/json", **self.h)
+        self.assertEqual(res.status_code, 200, res.json())
+        entreprise = Entreprise.objects.get(client=client)
+        self.assertGreater(entreprise.comptes.count(), 30)
+        # double création refusée
+        res = self.client.post("/api/admin/entreprises", data=json.dumps({
+            "client": client.id, "raison_sociale": "Doublon SARL",
+        }), content_type="application/json", **self.h)
+        self.assertEqual(res.status_code, 400)
+
+    def test_delete_entreprise_et_client(self):
+        client = Client.objects.create(name="Del", email="del@admin.tn", phone="1")
+        entreprise = Entreprise.objects.create(client=client, raison_sociale="Del SARL")
+        res = self.client.delete("/api/admin/entreprises", data=json.dumps({"id": entreprise.id}), content_type="application/json", **self.h)
+        self.assertEqual(res.status_code, 200, res.json())
+        res = self.client.delete("/api/admin/clients", data=json.dumps({"id": client.id}), content_type="application/json", **self.h)
+        self.assertEqual(res.status_code, 200, res.json())
+        self.assertFalse(Client.objects.filter(pk=client.id).exists())
+
+    def test_liste_entreprises_avec_nom_client(self):
+        client = Client.objects.create(name="List", email="list@admin.tn", phone="1")
+        Entreprise.objects.create(client=client, raison_sociale="List SARL")
+        res = self.client.get("/api/admin/entreprises", **self.h)
+        self.assertEqual(res.status_code, 200)
+        item = next(i for i in res.json()["items"] if i["id"] == client.entreprise.id)
+        self.assertEqual(item["raison_sociale"], "List SARL")
+        self.assertEqual(item["client_name"], "List")
+
+
+class EspaceEntrepriseComptabiliteTests(TestCase):
+    """Espace entreprise (tenant) : /api/client/comptabilite."""
+
+    def setUp(self):
+        self.client_model = Client.objects.create(
+            name="Tenant", email="tenant@espace.tn", phone="1",
+            user=User.objects.create_user(username="tenant@espace.tn", email="tenant@espace.tn", password="mdp12345678"),
+        )
+        token = new_client_token(self.client_model.user)
+        self.h = {"HTTP_AUTHORIZATION": f"Bearer {token.key}"}
+
+    def _entreprise(self):
+        ent = Entreprise.objects.create(client=self.client_model, raison_sociale="Tenant SARL")
+        seed_plan_comptable(ent)
+        return ent
+
+    def test_requiert_authentification(self):
+        res = self.client.get("/api/client/comptabilite")
+        self.assertEqual(res.status_code, 401)
+
+    def test_404_sans_entreprise_associee(self):
+        res = self.client.get("/api/client/comptabilite", **self.h)
+        self.assertEqual(res.status_code, 404)
+
+    def test_get_plan_et_bilan_bien_formes(self):
+        ent = self._entreprise()
+        res = self.client.get("/api/client/comptabilite", **self.h)
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data["entreprise"]["id"], ent.id)
+        self.assertGreater(data["plan_total"], 30)
+        self.assertEqual(len(data["plan"]), 7)  # 7 classes
+        self.assertIn("bilan", data["bilan"])
+        self.assertIn("resultat", data["bilan"])
+        self.assertEqual(data["ecritures"], [])
+
+    def test_creation_statut_suppression_ecriture(self):
+        self._entreprise()
+        treso = CompteComptable.objects.get(entreprise=self.client_model.entreprise, numero="5311")
+        caisse = CompteComptable.objects.get(entreprise=self.client_model.entreprise, numero="541")
+        res = self.client.post("/api/client/comptabilite", data=json.dumps({
+            "action": "ecriture_create", "journal": "banque", "numero_piece": "T-001",
+            "date": "2026-08-12", "libelle": "Dépôt en banque",
+            "lignes": [
+                {"compte": treso.id, "debit": "1000.000", "credit": "0"},
+                {"compte": caisse.id, "debit": "0", "credit": "1000.000"},
+            ],
+        }), content_type="application/json", **self.h)
+        self.assertEqual(res.status_code, 200, res.json())
+        eid = res.json()["id"]
+        res = self.client.post("/api/client/comptabilite", data=json.dumps({
+            "action": "ecriture_statut", "id": eid, "statut": "valide",
+        }), content_type="application/json", **self.h)
+        self.assertEqual(res.status_code, 200)
+        data = self.client.get("/api/client/comptabilite", **self.h).json()
+        self.assertEqual(data["ecritures"][0]["statut"], "valide")
+        self.assertEqual(data["grand_livre"]["total_debit"], data["grand_livre"]["total_credit"])
+        self.assertEqual(data["bilan"]["resultat"]["resultat"], "0.000")
+        res = self.client.delete("/api/client/comptabilite", data=json.dumps({
+            "kind": "ecriture", "id": eid,
+        }), content_type="application/json", **self.h)
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(EcritureComptable.objects.filter(entreprise=self.client_model.entreprise).count(), 0)
+
+    def test_piece_desequilibree_refusee(self):
+        self._entreprise()
+        treso = CompteComptable.objects.get(entreprise=self.client_model.entreprise, numero="5311")
+        caisse = CompteComptable.objects.get(entreprise=self.client_model.entreprise, numero="541")
+        res = self.client.post("/api/client/comptabilite", data=json.dumps({
+            "action": "ecriture_create", "journal": "od", "numero_piece": "T-002",
+            "date": "2026-08-12", "libelle": "Déséquilibrée",
+            "lignes": [
+                {"compte": treso.id, "debit": "500", "credit": "0"},
+                {"compte": caisse.id, "debit": "0", "credit": "400"},
+            ],
+        }), content_type="application/json", **self.h)
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(EcritureComptable.objects.count(), 0)
+
+    def test_compte_protege_si_utilise_et_creation_compte(self):
+        self._entreprise()
+        treso = CompteComptable.objects.get(entreprise=self.client_model.entreprise, numero="5311")
+        charge = CompteComptable.objects.get(entreprise=self.client_model.entreprise, numero="607")
+        res = self.client.post("/api/client/comptabilite", data=json.dumps({
+            "action": "ecriture_create", "journal": "od", "numero_piece": "T-003",
+            "date": "2026-08-12", "libelle": "Charge",
+            "lignes": [
+                {"compte": charge.id, "debit": "100", "credit": "0"},
+                {"compte": treso.id, "debit": "0", "credit": "100"},
+            ],
+        }), content_type="application/json", **self.h)
+        self.assertEqual(res.status_code, 200, res.json())
+        # compte utilisé : suppression protégée
+        res = self.client.delete("/api/client/comptabilite", data=json.dumps({
+            "kind": "compte", "id": treso.id,
+        }), content_type="application/json", **self.h)
+        self.assertEqual(res.status_code, 400)
+        # création compte personnalisé sous la classe 6
+        res = self.client.post("/api/client/comptabilite", data=json.dumps({
+            "action": "compte_create", "parent": charge.id, "numero": "6071", "intitule": "Achats de prestations",
+        }), content_type="application/json", **self.h)
+        self.assertEqual(res.status_code, 200, res.json())
+        self.assertTrue(CompteComptable.objects.filter(entreprise=self.client_model.entreprise, numero="6071").exists())
+        # compte libre : suppression OK
+        libre = CompteComptable.objects.create(entreprise=self.client_model.entreprise, numero="9999", intitule="À supprimer")
+        res = self.client.delete("/api/client/comptabilite", data=json.dumps({
+            "kind": "compte", "id": libre.id,
+        }), content_type="application/json", **self.h)
+        self.assertEqual(res.status_code, 200)
+
+    def test_client_ne_voit_pas_entreprise_d_autrui(self):
+        self._entreprise()
+        autre = Client.objects.create(
+            name="Autre", email="autre@espace.tn", phone="2",
+            user=User.objects.create_user(username="autre@espace.tn", email="autre@espace.tn", password="mdp12345678"),
+        )
+        autre_ent = Entreprise.objects.create(client=autre, raison_sociale="Autre SARL")
+        res = self.client.post("/api/client/comptabilite", data=json.dumps({
+            "action": "compte_create", "numero": "9998", "intitule": "Intrusion",
+        }), content_type="application/json", **self.h)
+        # crée un compte dans la propre entreprise (pas dans celle d'autrui)
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(autre_ent.comptes.filter(numero="9998").exists())
+        # suppression d'une écriture d'autrui → 404
+        res = self.client.delete("/api/client/comptabilite", data=json.dumps({
+            "kind": "ecriture", "id": 999999,
+        }), content_type="application/json", **self.h)
+        self.assertEqual(res.status_code, 404)

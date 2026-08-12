@@ -144,6 +144,26 @@ Rôles (niveaux) :
   les vues ne font que de la sérialisation JSON.
 - Niveaux d'accès : lecture comptable → niveau 60 minimum.
 
+### 4.1 Espace entreprise (tenant)
+
+- Page publique `/espace-entreprise/` (`templates/espace_entreprise.html` +
+  `static/js/espace_entreprise.js`) : le client connecté gère la comptabilité
+  **de sa propre entreprise** (plan comptable éditable, pièces/journaux, grand
+  livre, bilan) et retrouve ses dossiers + déclarations (même contenu que
+  l'espace client).
+- API unique `POST/GET/DELETE /api/client/comptabilite`
+  (`core/views.py:api_client_comptabilite`), scotée au client :
+  - **GET** → `{entreprise, plan (arbre), plan_total, ecritures, grand_livre, bilan}`,
+    avec `bilan = {bilan: {actif, passif, total_actif, total_passif}, resultat: {...}}`.
+  - **POST** → actions `ecriture_create`, `ecriture_statut`, `compte_create`, `compte_update`.
+  - **DELETE** → `{kind: "ecriture"|"compte", id}` ; comptes protégés s'ils portent
+    des écritures (`ProtectedError` → 400) ou s'ils ont des enfants.
+- Isolation tenant : toutes les requêtes sont filtrées par `entreprise=client.entreprise` ;
+  un client sans entreprise reçoit 404 ; les comptes d'une autre entreprise sont introuvables.
+- Testé de bout en bout (`EspaceEntrepriseComptabiliteTests` : auth, 404 sans
+  entreprise, pièce équilibrée→bilan, pièce déséquilibrée refusée, comptes protégés,
+  non-intrusion entre entreprises).
+
 ---
 
 ## 5. Refactor en 3 couches — état
