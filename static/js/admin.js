@@ -7,6 +7,7 @@ const BalanceAdmin = (() => {
     dashboard: "Aperçu général",
     client_messages: "Messagerie clients",
     clients: "Gestion clients",
+    entreprises: "Entreprises (tenants)",
     explorer: "Explorateur dossiers",
     client_service_suivis: "Dossiers clients",
     dossier_tasks: "Tâches",
@@ -40,6 +41,12 @@ const BalanceAdmin = (() => {
     declarations: {
       statut: ["a_faire", "en_cours", "depose", "retard"],
       type_declaration: ["mensuelle", "acompte", "annuelle", "autre"],
+    },
+    clients: {
+      statut_client: ["entreprise", "personne_physique"],
+    },
+    entreprises: {
+      forme_juridique: ["sarl", "sarlu", "sa", "suarl", "snc", "gie", "autre"],
     },
   };
 
@@ -110,8 +117,25 @@ const BalanceAdmin = (() => {
       { name: "email", label: "E-mail *", type: "email" },
       { name: "phone", label: "Téléphone", type: "text" },
       { name: "company", label: "Société", type: "text" },
+      { name: "statut_client", label: "Type de client", type: "select", options: ["entreprise", "personne_physique"] },
+      { name: "adresse", label: "Adresse", type: "text" },
       { name: "matricule_fiscale", label: "Matricule fiscale", type: "text" },
       { name: "cin", label: "CIN", type: "text" },
+      { name: "notes", label: "Notes", type: "textarea" },
+    ],
+    entreprises: [
+      { name: "client", label: "Client (tenant) *", type: "select", source: "/api/admin/clients", valueKey: "id", textKey: (c) => ((c.prenom ? c.prenom + " " : "") + c.name).trim() + (c.company ? " — " + c.company : "") },
+      { name: "raison_sociale", label: "Raison sociale *", type: "text" },
+      { name: "forme_juridique", label: "Forme juridique", type: "select", options: ["sarl", "sarlu", "sa", "suarl", "snc", "gie", "autre"] },
+      { name: "matricule_fiscale", label: "Matricule fiscal", type: "text" },
+      { name: "registre_commerce", label: "Registre de commerce (RCCM)", type: "text" },
+      { name: "activite", label: "Activité exercée", type: "text" },
+      { name: "adresse", label: "Adresse du siège", type: "text" },
+      { name: "code_postal", label: "Code postal", type: "text" },
+      { name: "ville", label: "Ville", type: "text" },
+      { name: "telephone", label: "Téléphone", type: "text" },
+      { name: "email", label: "E-mail", type: "email" },
+      { name: "representant_legal", label: "Représentant légal (gérant)", type: "text" },
       { name: "notes", label: "Notes", type: "textarea" },
     ],
     client_service_suivis: [
@@ -240,11 +264,31 @@ const BalanceAdmin = (() => {
     clients: [
       { key: "id", label: "N°" },
       { key: "name", label: "Nom" },
+      { key: "prenom", label: "Prénom" },
       { key: "email", label: "E-mail" },
       { key: "phone", label: "Tél." },
       { key: "company", label: "Société" },
+      { key: "statut_client", label: "Type" },
+      { key: "adresse", label: "Adresse" },
+      { key: "matricule_fiscale", label: "Mat. fiscal" },
+      { key: "cin", label: "CIN" },
       { key: "notes", label: "Notes" },
       { key: "created_at", label: "Ajouté le" },
+    ],
+    entreprises: [
+      { key: "id", label: "N°" },
+      { key: "client_name", label: "Client (tenant)" },
+      { key: "raison_sociale", label: "Raison sociale" },
+      { key: "forme_juridique", label: "Forme" },
+      { key: "matricule_fiscale", label: "Mat. fiscal" },
+      { key: "registre_commerce", label: "RCCM" },
+      { key: "activite", label: "Activité" },
+      { key: "adresse", label: "Adresse" },
+      { key: "ville", label: "Ville" },
+      { key: "telephone", label: "Tél." },
+      { key: "email", label: "E-mail" },
+      { key: "representant_legal", label: "Gérant" },
+      { key: "notes", label: "Notes" },
     ],
     payments: [
       { key: "id", label: "N°" },
@@ -403,6 +447,32 @@ const BalanceAdmin = (() => {
       date: { type: "date" },
       status: { type: "select", options: ["en_attente", "partiel", "paye", "retard", "annule"] },
     },
+    clients: {
+      name: { type: "text" },
+      prenom: { type: "text" },
+      email: { type: "text" },
+      phone: { type: "text" },
+      company: { type: "text" },
+      adresse: { type: "text" },
+      statut_client: { type: "select", options: ["entreprise", "personne_physique"] },
+      matricule_fiscale: { type: "text" },
+      cin: { type: "text" },
+      notes: { type: "text" },
+    },
+    entreprises: {
+      raison_sociale: { type: "text" },
+      matricule_fiscale: { type: "text" },
+      registre_commerce: { type: "text" },
+      forme_juridique: { type: "select", options: ["sarl", "sarlu", "sa", "suarl", "snc", "gie", "autre"] },
+      activite: { type: "text" },
+      adresse: { type: "text" },
+      code_postal: { type: "text" },
+      ville: { type: "text" },
+      telephone: { type: "text" },
+      email: { type: "text" },
+      representant_legal: { type: "text" },
+      notes: { type: "text" },
+    },
   };
 
   const EXPLORER_EDIT_FIELDS = {
@@ -415,7 +485,11 @@ const BalanceAdmin = (() => {
 
   const ROW_ACTIONS = {
     clients: (item) => `
-      <button class="btn btn-sm" onclick="BalanceAdmin.showFiche(${item.id})">Fiche client</button>`,
+      <button class="btn btn-sm" onclick="BalanceAdmin.showFiche(${item.id})">Fiche client</button>
+      <button class="btn btn-sm btn-danger" onclick="BalanceAdmin.deleteRow('clients', ${item.id}, '${escapeHtml(String(item.name)).replace(/'/g, "\\'")}')">Supprimer</button>`,
+    entreprises: (item) => `
+      <button class="btn btn-sm" onclick="BalanceAdmin.showFiche(${item.client_id})">Fiche client</button>
+      <button class="btn btn-sm btn-danger" onclick="BalanceAdmin.deleteRow('entreprises', ${item.id}, '${escapeHtml(String(item.raison_sociale)).replace(/'/g, "\\'")}')">Supprimer</button>`,
     types_service: (item) => `
       <button class="btn btn-sm" onclick="BalanceAdmin.addSubService(${item.id}, '${escapeHtml(String(item.title)).replace(/'/g, "\\'")}')">＋ sous-service</button>
       <button class="btn btn-sm btn-danger" onclick="BalanceAdmin.deleteService(${item.id}, '${escapeHtml(String(item.title)).replace(/'/g, "\\'")}')">Supprimer</button>`,
@@ -635,7 +709,7 @@ const BalanceAdmin = (() => {
                 <option value="false" ${!value ? "selected" : ""}>Inactif</option>
               </select></td>`;
             }
-            if (c.key === "status" || c.key === "statut_paiement" || c.key === "statut_service" || c.key === "frequence" || c.key === "repetition" || c.key === "type_declaration" || (c.key === "statut" && tab !== "dossier_attachments")) {
+            if (c.key === "status" || c.key === "statut_paiement" || c.key === "statut_service" || c.key === "frequence" || c.key === "repetition" || c.key === "type_declaration" || c.key === "statut_client" || c.key === "forme_juridique" || (c.key === "statut" && tab !== "dossier_attachments")) {
               const opts = Array.isArray(STATUS_OPTIONS[tab])
                 ? STATUS_OPTIONS[tab]
                 : (STATUS_OPTIONS[tab] || {})[c.key] || [];
@@ -794,6 +868,134 @@ const BalanceAdmin = (() => {
 
   function closeDetail() {
     document.getElementById("admin-detail-overlay").style.display = "none";
+  }
+
+  const FICHE_FORMES = ["sarl", "sarlu", "sa", "suarl", "snc", "gie", "autre"];
+  const FICHE_STATUTS = ["entreprise", "personne_physique"];
+
+  function ficheField(name, label, value, opts) {
+    const id = `fiche-${name}`;
+    const val = value == null ? "" : String(value);
+    if (opts) {
+      const sel = opts.map((o) => `<option value="${o}" ${val === o ? "selected" : ""}>${o.replace(/_/g, " ")}</option>`).join("");
+      return `<div class="form-group"><label for="${id}">${label}</label><select id="${id}">${sel}</select></div>`;
+    }
+    return `<div class="form-group"><label for="${id}">${label}</label><input id="${id}" type="text" value="${escapeHtml(val)}" /></div>`;
+  }
+
+  async function showFiche(clientId) {
+    try {
+      const data = await api(`/api/admin/fiche/${clientId}`);
+      currentDetail = { tab: "clients", id: clientId };
+      document.getElementById("admin-detail-overlay").style.display = "flex";
+      const c = data.client;
+      const ent = data.entreprise || {};
+      const s = data.stats || {};
+      const entBlock = ent.id
+        ? `
+          <h4>Entreprise (tenant)</h4>
+          <div class="form-grid">
+            ${ficheField("raison_sociale", "Raison sociale", ent.raison_sociale)}
+            ${ficheField("forme_juridique", "Forme juridique", ent.forme_juridique, FICHE_FORMES)}
+            ${ficheField("ent_matricule_fiscale", "Matricule fiscal", ent.matricule_fiscale)}
+            ${ficheField("registre_commerce", "Registre de commerce (RCCM)", ent.registre_commerce)}
+            ${ficheField("activite", "Activité", ent.activite)}
+            ${ficheField("ent_adresse", "Adresse du siège", ent.adresse)}
+            ${ficheField("code_postal", "Code postal", ent.code_postal)}
+            ${ficheField("ville", "Ville", ent.ville)}
+            ${ficheField("ent_telephone", "Téléphone", ent.telephone)}
+            ${ficheField("ent_email", "E-mail", ent.email)}
+            ${ficheField("representant_legal", "Représentant légal (gérant)", ent.representant_legal)}
+            ${ficheField("ent_notes", "Notes", ent.notes)}
+          </div>`
+        : `
+          <h4>Entreprise (tenant)</h4>
+          <p class="muted-sm">Ce client n'a pas encore d'entreprise (tenant) ni de plan comptable.</p>
+          <button class="btn" onclick="BalanceAdmin.createFicheEntreprise(${clientId})">＋ Créer l'entreprise (tenant)</button>`;
+      document.getElementById("admin-detail-body").innerHTML = `
+        <h3>Fiche client N°${c.id} — ${escapeHtml(c.display_name)}</h3>
+        <div class="fiche-stats" style="margin:10px 0">
+          <span class="badge nouveau">${s.dossiers_actifs || 0} dossier(s) actif(s)</span>
+          <span class="badge annule">${s.declarations_en_retard || 0} déclaration(s) en retard</span>
+          <span class="badge annule">${s.paiements_en_attente || 0} paiement(s) en attente</span>
+          <span class="badge nouveau">${s.messages_sans_reponse || 0} message(s) sans réponse</span>
+        </div>
+        <h4>Coordonnées</h4>
+        <div class="form-grid">
+          ${ficheField("name", "Nom *", c.name)}
+          ${ficheField("prenom", "Prénom", c.prenom)}
+          ${ficheField("email", "E-mail", c.email)}
+          ${ficheField("phone", "Téléphone", c.phone)}
+          ${ficheField("company", "Société", c.company)}
+          ${ficheField("statut_client", "Type de client", c.statut_client, FICHE_STATUTS)}
+          ${ficheField("adresse", "Adresse", c.adresse)}
+          ${ficheField("matricule_fiscale", "Matricule fiscale", c.matricule_fiscale)}
+          ${ficheField("cin", "CIN", c.cin)}
+          ${ficheField("notes", "Notes", c.notes)}
+        </div>
+        ${entBlock}
+        <p class="muted-sm" style="margin-top:10px">Compte client : ${c.has_account ? "créé (espace client actif)" : "non créé"} · Ajouté le ${c.created_at}</p>
+        <div style="display:flex;gap:8px;margin-top:14px">
+          <button class="btn" onclick="BalanceAdmin.saveFiche(${clientId})">Enregistrer la fiche</button>
+          <button class="btn btn-outline" onclick="BalanceAdmin.closeDetail()">Fermer</button>
+        </div>`;
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  async function createFicheEntreprise(clientId) {
+    if (!confirm("Créer l'entreprise (tenant) pour ce client et initialiser son plan comptable ?")) return;
+    try {
+      const data = await api(`/api/admin/fiche/${clientId}`, { method: "POST" });
+      alert(data.created ? "Entreprise créée et plan comptable initialisé." : "L'entreprise existait déjà.");
+      showFiche(clientId);
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  async function saveFiche(clientId) {
+    const read = (name) => (document.getElementById(`fiche-${name}`) || {}).value || "";
+    if (!read("name").trim()) {
+      alert("Nom requis.");
+      return;
+    }
+    const payload = {
+      name: read("name"),
+      prenom: read("prenom"),
+      email: read("email"),
+      phone: read("phone"),
+      company: read("company"),
+      statut_client: read("statut_client"),
+      adresse: read("adresse"),
+      matricule_fiscale: read("matricule_fiscale"),
+      cin: read("cin"),
+      notes: read("notes"),
+    };
+    if (document.getElementById("fiche-raison_sociale")) {
+      payload.entreprise = {
+        raison_sociale: read("raison_sociale"),
+        forme_juridique: read("forme_juridique"),
+        matricule_fiscale: read("ent_matricule_fiscale"),
+        registre_commerce: read("registre_commerce"),
+        activite: read("activite"),
+        adresse: read("ent_adresse"),
+        code_postal: read("code_postal"),
+        ville: read("ville"),
+        telephone: read("ent_telephone"),
+        email: read("ent_email"),
+        representant_legal: read("representant_legal"),
+        notes: read("ent_notes"),
+      };
+    }
+    try {
+      await api(`/api/admin/fiche/${clientId}`, { method: "PUT", body: JSON.stringify(payload) });
+      alert("Fiche mise à jour.");
+      showFiche(clientId);
+    } catch (e) {
+      alert(e.message);
+    }
   }
 
   async function saveField(el) {
@@ -966,6 +1168,17 @@ const BalanceAdmin = (() => {
     try {
       const data = await api(`/api/admin/types_service`, { method: "DELETE", body: JSON.stringify({ id }) });
       alert(data.message || "Service supprimé.");
+      applyFilters();
+    } catch (e) {
+      alert(e.message);
+    }
+  }
+
+  async function deleteRow(table, id, label) {
+    if (!confirm(`Supprimer « ${label || "cet élément"} » (N°${id}) ? Cette action est définitive.`)) return;
+    try {
+      const data = await api(`/api/admin/${table}`, { method: "DELETE", body: JSON.stringify({ id }) });
+      alert(data.message || "Élément supprimé.");
       applyFilters();
     } catch (e) {
       alert(e.message);
@@ -1937,5 +2150,5 @@ const BalanceAdmin = (() => {
     }
   });
 
-  return { login, logout, switchTab, saveField, toggleCreate, showDetail, closeDetail, applyFilters, toggleLive, addSubService, deleteService, replyMessage, loadExplorer, explorerDossiers, explorerDossier, explorerAdd, explorerEdit, explorerDelete, explorerCancel, deleteCollaborateur, markTaskDone, loadComptabilite, comptaSelectEntreprise, comptaView, comptaInitPlan, comptaAddCompte, comptaEditCompte, comptaDeleteCompte, comptaCompteFormCancel, comptaEcritureForm, comptaAddEcritureLine, comptaRemoveLigne, comptaUpdateTotaux, comptaEcritureFormCancel, comptaVoirEcriture, comptaDeleteEcriture, comptaGrandLivreView, comptaBilanView, loadStaff, staffCreateForm, staffFormCancel, staffSave, staffGenToken, staffRevokeToken, staffChangeRole, staffToggleActif, staffDelete };
+  return { login, logout, switchTab, saveField, toggleCreate, showDetail, closeDetail, applyFilters, toggleLive, addSubService, deleteService, deleteRow, replyMessage, showFiche, createFicheEntreprise, saveFiche, loadExplorer, explorerDossiers, explorerDossier, explorerAdd, explorerEdit, explorerDelete, explorerCancel, deleteCollaborateur, markTaskDone, loadComptabilite, comptaSelectEntreprise, comptaView, comptaInitPlan, comptaAddCompte, comptaEditCompte, comptaDeleteCompte, comptaCompteFormCancel, comptaEcritureForm, comptaAddEcritureLine, comptaRemoveLigne, comptaUpdateTotaux, comptaEcritureFormCancel, comptaVoirEcriture, comptaDeleteEcriture, comptaGrandLivreView, comptaBilanView, loadStaff, staffCreateForm, staffFormCancel, staffSave, staffGenToken, staffRevokeToken, staffChangeRole, staffToggleActif, staffDelete };
 })();

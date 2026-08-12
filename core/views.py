@@ -701,7 +701,7 @@ TABLES = {
     "devis_requests": (DevisRequest, ["id", "name", "email", "phone", "company", "budget", "details", "status", "created_at"], "service_title"),
     "appointments": (Appointment, ["id", "name", "email", "phone", "date", "time", "notes", "status"], "service_title"),
     "messages": (Message, ["id", "name", "email", "phone", "subject", "message", "status", "created_at"], None),
-    "clients": (Client, ["id", "name", "email", "phone", "company", "notes", "created_at"], None),
+    "clients": (Client, ["id", "name", "prenom", "email", "phone", "company", "adresse", "statut_client", "matricule_fiscale", "cin", "notes", "created_at"], None),
     "payments": (Payment, ["id", "client_name", "dossier_service", "amount", "date", "status", "method", "notes", "created_at"], None),
     "service_followups": (ServiceFollowUp, ["id", "client_name", "service_title", "dossier_id", "dossier_label", "collaborateur_id", "collaborateur_name", "status", "start_date", "due_date", "notes", "created_at"], None),
     "types_service": (Service, ["id", "title", "slug", "short_desc", "parent_title"], None),
@@ -712,7 +712,7 @@ TABLES = {
     "dossier_attachments": (DossierAttachment, ["id", "client_name", "dossier_service", "original_name", "category", "size", "uploaded_by", "created_at"], None),
     "declarations": (DeclarationFiscale, ["id", "client_name", "dossier_service", "type_declaration", "periode", "date_echeance_legale", "statut", "numero_quittance_ou_tej", "montant_a_payer", "notes_collaborateur"], None),
     "collaborateurs": (Collaborateur, ["id", "display_name", "fonction", "email", "telephone", "actif", "notes", "created_at"], None),
-    "entreprises": (Entreprise, ["id", "client_name", "raison_sociale", "matricule_fiscale", "registre_commerce", "forme_juridique", "activite", "adresse", "code_postal", "ville", "telephone", "email", "representant_legal", "notes", "updated_at"], None),
+    "entreprises": (Entreprise, ["id", "client_id", "client_name", "raison_sociale", "matricule_fiscale", "registre_commerce", "forme_juridique", "activite", "adresse", "code_postal", "ville", "telephone", "email", "representant_legal", "notes", "updated_at"], None),
     "comptes": (CompteComptable, ["id", "entreprise_name", "classe", "niveau", "parent_id", "parent_label", "numero", "intitule", "active"], None),
     "ecritures": (EcritureComptable, ["id", "entreprise_name", "journal", "numero_piece", "date", "libelle", "statut", "total_debit", "total_credit", "equilibree", "nb_lignes"], None),
 }
@@ -1676,12 +1676,17 @@ def _api_admin_create(request, table):
             return _json({"ok": False, "error": "Nom et e-mail requis."}, 400)
         if Client.objects.filter(email__iexact=email).exists():
             return _json({"ok": False, "error": "Un client existe déjà avec cet e-mail."}, 400)
+        statut_client = body.get("statut_client") or "entreprise"
+        if statut_client not in {s for s, _ in Client.STATUT_CHOICES}:
+            return _json({"ok": False, "error": "Type de client invalide."}, 400)
         client = Client.objects.create(
             name=name,
             prenom=(body.get("prenom") or "").strip(),
             email=email,
             phone=(body.get("phone") or "").strip(),
             company=(body.get("company") or "").strip(),
+            adresse=(body.get("adresse") or "").strip(),
+            statut_client=statut_client,
             matricule_fiscale=(body.get("matricule_fiscale") or "").strip(),
             cin=(body.get("cin") or "").strip(),
             notes=(body.get("notes") or "").strip(),
