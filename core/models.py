@@ -1,5 +1,6 @@
 from django.contrib.auth.models import User
 from django.db import models
+from django.utils import timezone
 
 
 class Service(models.Model):
@@ -156,6 +157,45 @@ class Client(models.Model):
         if self.statut_client == "entreprise" and self.company:
             return self.company
         return f"{self.prenom} {self.name}".strip()
+
+
+class Entreprise(models.Model):
+    """Entreprise (tenant) rattachée à un compte client du cabinet."""
+
+    FORME_CHOICES = [
+        ("sarl", "SARL"),
+        ("sarlu", "SARL unipersonnelle"),
+        ("sa", "SA"),
+        ("suarl", "SUARL"),
+        ("snc", "SNC"),
+        ("gie", "GIE"),
+        ("autre", "Autre"),
+    ]
+    client = models.OneToOneField(
+        Client, on_delete=models.CASCADE, related_name="entreprise", verbose_name="Client (tenant)"
+    )
+    raison_sociale = models.CharField(max_length=160, verbose_name="Raison sociale")
+    matricule_fiscale = models.CharField(max_length=60, blank=True, verbose_name="Matricule fiscal")
+    registre_commerce = models.CharField(max_length=100, blank=True, verbose_name="Registre de commerce (RCCM)")
+    forme_juridique = models.CharField(max_length=30, choices=FORME_CHOICES, blank=True, verbose_name="Forme juridique")
+    activite = models.CharField(max_length=160, blank=True, verbose_name="Activité exercée")
+    adresse = models.CharField(max_length=255, blank=True, verbose_name="Adresse du siège")
+    code_postal = models.CharField(max_length=20, blank=True, verbose_name="Code postal")
+    ville = models.CharField(max_length=80, blank=True, verbose_name="Ville")
+    telephone = models.CharField(max_length=30, blank=True, verbose_name="Téléphone")
+    email = models.EmailField(blank=True, verbose_name="E-mail")
+    representant_legal = models.CharField(max_length=160, blank=True, verbose_name="Représentant légal (gérant)")
+    notes = models.TextField(blank=True, verbose_name="Notes")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Créée le")
+    updated_at = models.DateTimeField(auto_now=True, verbose_name="Mise à jour")
+
+    class Meta:
+        ordering = ["raison_sociale"]
+        verbose_name = "Entreprise (tenant)"
+        verbose_name_plural = "Entreprises (tenants)"
+
+    def __str__(self):
+        return self.raison_sociale
 
 
 class ClientServiceSuivi(models.Model):
@@ -413,14 +453,102 @@ class ClientMessage(models.Model):
 
 
 class AuthToken(models.Model):
-    """Jeton d'accès à l'espace client."""
+    """Jeton d'accès à l'espace client (durée de vie limitée, rotation au login)."""
 
     key = models.CharField(max_length=64, unique=True, verbose_name="Jeton")
     user = models.OneToOneField(User, on_delete=models.CASCADE, verbose_name="Utilisateur")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="Créé le")
+    expires_at = models.DateTimeField(verbose_name="Expire le", null=True, blank=True)
+    last_used_at = models.DateTimeField(verbose_name="Dernier usage", null=True, blank=True)
 
     def __str__(self):
         return f"Token {self.user.username}"
+
+    @property
+    def is_valid(self):
+        if self.expires_at and timezone.now() > self.expires_at:
+            return False
+        return True
+
+
+class StaffProfile(models.Model):
+    """Profil RBAC d'un membre du cabinet (jetons admin par rôle)."""
+
+    ROLE_CHOICES = [
+        ("admin", "Administrateur"),
+        ("gestionnaire", "Gestionnaire"),
+        ("comptable", "Comptable"),
+        ("lecture", "Lecture seule"),
+    ]
+    ROLE_LEVELS = {"admin": 100, "gestionnaire": 80, "comptable": 60, "lecture": 40}
+
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="staff_profile", verbose_name="Utilisateur")
+    role = models.CharField(max_length=30, choices=ROLE_CHOICES, default="lecture", verbose_name="Rôle")
+    actif = models.BooleanField(default=True, verbose_name="Compte actif")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Créé le")
+
+    class Meta:
+        verbose_name = "Profil staff"
+        verbose_name_plural = "Profils staff"
+
+    def __str__(self):
+        return f"{self.user.get_full_name() or self.user.username} ({self.get_role_display()})"
+
+    @property
+    def level(self):
+        return self.ROLE_LEVELS.get(self.role, 0)
+
+
+class StaffToken(models.Model):
+    """Jeton Bearer d'accès à l'API admin, rattaché à un profil staff (RBAC)."""
+
+    key = models.CharField(max_length=64, unique=True, verbose_name="Jeton")
+    profile = models.ForeignKey(StaffProfile, on_delete=models.CASCADE, related_name="tokens", verbose_name="Profil")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Créé le")
+    expires_at = models.DateTimeField(verbose_name="Expire le", null=True, blank=True)
+    last_used_at = models.DateTimeField(verbose_name="Dernier usage", null=True, blank=True)
+    revoque = models.BooleanField(default=False, verbose_name="Révoqué")
+
+    def __str__(self):
+        return f"StaffToken {self.profile}"
+
+    @property
+    def is_valid(self):
+        if self.revoque:
+            return False
+        if self.expires_at and timezone.now() > self.expires_at:
+            return False
+        return self.profile.actif
+
+
+class SecurityLog(models.Model):
+    """Journal de sécurité : connexions, échecs, tokens, actions sensibles."""
+
+    ACTION_CHOICES = [
+        ("login_ok", "Connexion réussie"),
+        ("login_fail", "Échec de connexion"),
+        ("register", "Inscription"),
+        ("token_expired", "Jeton expiré"),
+        ("token_created", "Jeton créé"),
+        ("token_revoked", "Jeton révoqué"),
+        ("throttled", "Tentative bloquée (trop d'échecs)"),
+        ("staff_created", "Membre staff créé"),
+        ("role_changed", "Rôle modifié"),
+    ]
+    action = models.CharField(max_length=30, choices=ACTION_CHOICES, verbose_name="Action")
+    actor = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, verbose_name="Utilisateur concerné")
+    email = models.CharField(max_length=254, blank=True, verbose_name="E-mail")
+    ip = models.GenericIPAddressField(null=True, blank=True, verbose_name="Adresse IP")
+    details = models.CharField(max_length=400, blank=True, verbose_name="Détails")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Le")
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Journal de sécurité"
+        verbose_name_plural = "Journal de sécurité"
+
+    def __str__(self):
+        return f"{self.action} {self.email or self.actor or ''} {self.created_at:%d/%m/%Y %H:%M}"
 
 
 class Payment(models.Model):
@@ -597,3 +725,111 @@ class DeclarationFiscale(models.Model):
     @property
     def dossier_service(self):
         return f"{self.dossier.service_title} (N°{self.dossier.id})" if self.dossier else "—"
+
+
+class CompteComptable(models.Model):
+    """Plan comptable tunisien : Classe (1-7) > Compte > Sous-compte > Compte enfant."""
+
+    entreprise = models.ForeignKey(
+        Entreprise, on_delete=models.CASCADE, related_name="comptes", verbose_name="Entreprise (tenant)"
+    )
+    parent = models.ForeignKey(
+        "self", null=True, blank=True, on_delete=models.CASCADE, related_name="enfants", verbose_name="Compte parent"
+    )
+    numero = models.CharField(max_length=20, verbose_name="Numéro de compte")
+    intitule = models.CharField(max_length=200, verbose_name="Intitulé")
+    active = models.BooleanField(default=True, verbose_name="Actif")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Créé le")
+
+    class Meta:
+        ordering = ["numero"]
+        unique_together = [("entreprise", "numero")]
+        verbose_name = "Compte comptable"
+        verbose_name_plural = "Plan comptable"
+
+    def __str__(self):
+        return f"{self.numero} — {self.intitule}"
+
+    @property
+    def classe(self):
+        return self.numero[:1] if self.numero else ""
+
+    @property
+    def niveau(self):
+        n = 0
+        cur = self
+        while cur.parent_id:
+            n += 1
+            cur = cur.parent
+        return n
+
+    @property
+    def is_leaf(self):
+        return not self.enfants.exists()
+
+
+class EcritureComptable(models.Model):
+    """Pièce comptable : un journal contenant des lignes débit/crédit équilibrées."""
+
+    JOURNAL_CHOICES = [
+        ("od", "Opérations diverses"),
+        ("ventes", "Journal des ventes"),
+        ("achats", "Journal des achats"),
+        ("banque", "Journal de banque"),
+        ("caisse", "Journal de caisse"),
+    ]
+    STATUT_CHOICES = [
+        ("brouillon", "Brouillon"),
+        ("valide", "Validé"),
+    ]
+    entreprise = models.ForeignKey(
+        Entreprise, on_delete=models.CASCADE, related_name="ecritures", verbose_name="Entreprise (tenant)"
+    )
+    journal = models.CharField(max_length=20, choices=JOURNAL_CHOICES, default="od", verbose_name="Journal")
+    numero_piece = models.CharField(max_length=40, verbose_name="N° pièce")
+    date = models.DateField(verbose_name="Date")
+    libelle = models.CharField(max_length=255, verbose_name="Libellé")
+    statut = models.CharField(max_length=20, choices=STATUT_CHOICES, default="brouillon", verbose_name="Statut")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Créée le")
+
+    class Meta:
+        ordering = ["date", "-id"]
+        verbose_name = "Écriture comptable"
+        verbose_name_plural = "Journaux et pièces"
+
+    def __str__(self):
+        return f"{self.numero_piece} — {self.libelle} ({self.date})"
+
+    @property
+    def total_debit(self):
+        return self.lignes.aggregate(s=models.Sum("debit"))["s"] or 0
+
+    @property
+    def total_credit(self):
+        return self.lignes.aggregate(s=models.Sum("credit"))["s"] or 0
+
+    @property
+    def est_equilibree(self):
+        return round(self.total_debit, 3) == round(self.total_credit, 3)
+
+
+class LigneEcriture(models.Model):
+    """Ligne de journal : débit et/ou crédit sur un compte du plan comptable."""
+
+    ecriture = models.ForeignKey(
+        EcritureComptable, on_delete=models.CASCADE, related_name="lignes", verbose_name="Écriture"
+    )
+    compte = models.ForeignKey(
+        CompteComptable, on_delete=models.PROTECT, related_name="lignes", verbose_name="Compte"
+    )
+    libelle = models.CharField(max_length=255, blank=True, verbose_name="Libellé de ligne")
+    debit = models.DecimalField(max_digits=15, decimal_places=3, default=0, verbose_name="Débit")
+    credit = models.DecimalField(max_digits=15, decimal_places=3, default=0, verbose_name="Crédit")
+
+    class Meta:
+        ordering = ["id"]
+        verbose_name = "Ligne d'écriture"
+        verbose_name_plural = "Lignes d'écritures"
+
+    def __str__(self):
+        return f"{self.compte.numero} — {self.debit}/{self.credit}"

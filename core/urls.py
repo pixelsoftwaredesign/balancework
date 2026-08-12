@@ -31,6 +31,7 @@ urlpatterns = [
     path("api/client/dossiers", views.api_client_create_dossier, name="api_client_create_dossier"),
     path("api/client/dossiers/<int:dossier_id>", views.api_client_update_dossier, name="api_client_update_dossier"),
     path("api/client/profile", views.api_client_profile, name="api_client_profile"),
+    path("api/client/entreprise", views.api_client_entreprise, name="api_client_entreprise"),
     path("api/client/dossiers/<int:dossier_id>/attachments", views.api_client_attachments, name="api_client_attachments"),
     path("api/client/attachments/<int:attachment_id>", views.api_client_attachment_delete, name="api_client_attachment_delete"),
     path("api/client/prefacture/<int:prefacture_id>", views.api_client_prefacture, name="api_client_prefacture"),
@@ -39,8 +40,16 @@ urlpatterns = [
     # API admin (jeton Bearer)
     path("api/admin/dashboard", views.api_admin_dashboard, name="api_admin_dashboard"),
     path("api/admin/detail/<str:table>/<int:obj_id>", views.api_admin_detail, name="api_admin_detail"),
+    path("api/admin/fiche/<int:client_id>", views.api_admin_fiche, name="api_admin_fiche"),
+    path("api/admin/comptabilite/plan/init/<int:entreprise_id>", views.api_admin_plan_init, name="api_admin_plan_init"),
+    path("api/admin/comptabilite/plan/<int:entreprise_id>", views.api_admin_plan, name="api_admin_plan"),
+    path("api/admin/comptabilite/grand-livre/<int:entreprise_id>", views.api_admin_grand_livre, name="api_admin_grand_livre"),
+    path("api/admin/comptabilite/bilan/<int:entreprise_id>", views.api_admin_bilan, name="api_admin_bilan"),
     path("api/admin/explorer/<int:client_id>", views.api_admin_explorer, name="api_admin_explorer_client"),
     path("api/admin/explorer", views.api_admin_explorer, name="api_admin_explorer"),
+    path("api/admin/staff", views.api_admin_staff, name="api_admin_staff"),
+    path("api/admin/staff/token", views.api_admin_staff_token, name="api_admin_staff_token"),
+    path("api/admin/security/log", views.api_admin_security_log, name="api_admin_security_log"),
     path("api/admin/<str:table>", views.api_admin, name="api_admin"),
 
     # SEO

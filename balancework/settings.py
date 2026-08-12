@@ -146,6 +146,10 @@ DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", f"{SITE_NAME} <{SITE_EMAIL}>")
 # ---------- Admin API ----------
 ADMIN_TOKEN = env("ADMIN_TOKEN", "")
 
+# ---------- Sécurité : jetons ----------
+CLIENT_TOKEN_TTL_DAYS = int(env("CLIENT_TOKEN_TTL_DAYS", "30"))
+STAFF_TOKEN_TTL_DAYS = int(env("STAFF_TOKEN_TTL_DAYS", "7"))
+
 # ---------- Production / derrière Cloudflare ----------
 if not DEBUG:
     # Le trafic HTTPS arrive via Cloudflare (proxy)

@@ -1,22 +1,33 @@
 import json
 from datetime import date, timedelta
 
+from django.contrib.auth.models import User
 from django.test import TestCase, override_settings
+from django.utils import timezone
 
 from .models import (
     Appointment,
+    AuthToken,
     Client,
     ClientMessage,
     ClientServiceSuivi,
     Collaborateur,
+    CompteComptable,
     DeclarationFiscale,
     DevisRequest,
     DossierTask,
+    EcritureComptable,
+    Entreprise,
+    LigneEcriture,
     Message,
     Payment,
+    SecurityLog,
     Service,
     ServiceFollowUp,
+    StaffProfile,
+    StaffToken,
 )
+from .plan_comptable import seed_plan_comptable
 
 
 class ApiServicesTests(TestCase):
@@ -459,3 +470,220 @@ class AdminDashboardTests(TestCase):
         task = next(x for x in feed if x["kind"] == "tache")
         self.assertEqual(task["titre"], "Déposer la TVA")
         self.assertTrue(task["overdue"])
+
+
+@override_settings(ADMIN_TOKEN="secret-test")
+class ComptabiliteTests(TestCase):
+    def setUp(self):
+        self.h = {"HTTP_AUTHORIZATION": "Bearer secret-test"}
+        self.client_model = Client.objects.create(name="Doe", email="d@test.tn", phone="1")
+        self.entreprise = Entreprise.objects.create(
+            client=self.client_model, raison_sociale="Doe & Fils SARL"
+        )
+        seed_plan_comptable(self.entreprise)
+        self.compte_treso = CompteComptable.objects.get(entreprise=self.entreprise, numero="5311")
+        self.compte_vente = CompteComptable.objects.get(entreprise=self.entreprise, numero="707")
+        self.compte_charge = CompteComptable.objects.get(entreprise=self.entreprise, numero="607")
+
+    def _post_ecriture(self, lignes, statut="valide", piece="PC-001"):
+        return self.client.post(
+            "/api/admin/ecritures",
+            data=json.dumps({
+                "entreprise": self.entreprise.id,
+                "journal": "od",
+                "numero_piece": piece,
+                "date": "2026-08-01",
+                "libelle": "Vente prestation",
+                "statut": statut,
+                "lignes": lignes,
+            }),
+            content_type="application/json",
+            **self.h,
+        )
+
+    def test_seed_plan_comptable_structure(self):
+        classes = CompteComptable.objects.filter(entreprise=self.entreprise, parent__isnull=True)
+        self.assertEqual(classes.count(), 7)
+        self.assertEqual(list(classes.values_list("numero", flat=True)), ["1", "2", "3", "4", "5", "6", "7"])
+        self.assertGreater(CompteComptable.objects.filter(entreprise=self.entreprise).count(), 30)
+        compte = CompteComptable.objects.get(entreprise=self.entreprise, numero="5311")
+        self.assertEqual(compte.niveau, 3)  # Classe 5 > 53 > 531 > 5311
+        self.assertTrue(compte.is_leaf)
+
+    def test_plan_api_tree_and_init(self):
+        res = self.client.get(f"/api/admin/comptabilite/plan/{self.entreprise.id}", **self.h)
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(len(data["plan"]), 7)
+        self.assertEqual(data["plan"][0]["numero"], "1")
+        # init sans doublon
+        res2 = self.client.post(f"/api/admin/comptabilite/plan/init/{self.entreprise.id}", **self.h)
+        self.assertFalse(res2.json()["seeded"])
+
+    def test_ecriture_validee_alimente_grand_livre_et_bilan(self):
+        res = self._post_ecriture([
+            {"compte": self.compte_treso.id, "debit": "1000", "credit": ""},
+            {"compte": self.compte_vente.id, "debit": "", "credit": "1000"},
+        ])
+        self.assertEqual(res.status_code, 200, res.json())
+        ecr = EcritureComptable.objects.get()
+        self.assertTrue(ecr.est_equilibree)
+        gl = self.client.get(f"/api/admin/comptabilite/grand-livre/{self.entreprise.id}", **self.h).json()
+        by_num = {c["numero"]: c for c in gl["comptes"]}
+        self.assertEqual(by_num["5311"]["solde_debiteur"], "1000.000")
+        self.assertEqual(by_num["707"]["solde_crediteur"], "1000.000")
+        self.assertEqual(gl["total_debit"], gl["total_credit"])
+        bilan = self.client.get(f"/api/admin/comptabilite/bilan/{self.entreprise.id}", **self.h).json()
+        self.assertEqual(bilan["bilan"]["total_actif"], bilan["bilan"]["total_passif"])
+        self.assertEqual(bilan["resultat"]["resultat"], "1000.000")
+
+    def test_ecriture_desequilibree_rejetee(self):
+        res = self._post_ecriture([
+            {"compte": self.compte_treso.id, "debit": "500", "credit": ""},
+            {"compte": self.compte_vente.id, "debit": "", "credit": "400"},
+        ])
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(EcritureComptable.objects.count(), 0)
+
+    def test_ecriture_brouillon_non_prise_en_compte_bilan(self):
+        self._post_ecriture([
+            {"compte": self.compte_treso.id, "debit": "2000", "credit": ""},
+            {"compte": self.compte_vente.id, "debit": "", "credit": "2000"},
+        ], statut="brouillon")
+        bilan = self.client.get(f"/api/admin/comptabilite/bilan/{self.entreprise.id}", **self.h).json()
+        self.assertEqual(bilan["resultat"]["resultat"], "0.000")
+
+    def test_ajout_compte_custom(self):
+        res = self.client.post(
+            "/api/admin/comptes",
+            data=json.dumps({
+                "entreprise": self.entreprise.id,
+                "parent": self.compte_charge.id,
+                "numero": "6071",
+                "intitule": "Achats de prestations",
+            }),
+            content_type="application/json",
+            **self.h,
+        )
+        self.assertEqual(res.status_code, 200, res.json())
+        c = CompteComptable.objects.get(entreprise=self.entreprise, numero="6071")
+        self.assertEqual(c.parent_id, self.compte_charge.id)
+
+
+@override_settings(ADMIN_TOKEN="secret-test")
+class SecurityRbacTests(TestCase):
+    def _staff(self, role):
+        user = User.objects.create_user(username=f"u-{role}", email=f"{role}@cabinet.tn", password="mdp12345678")
+        return StaffProfile.objects.create(user=user, role=role)
+
+    def test_jeton_staff_lecture_lit_mais_ne_ecrit_pas(self):
+        profil = self._staff("lecture")
+        token = StaffToken.objects.create(profile=profil, key="tok_lecture")
+        h = {"HTTP_AUTHORIZATION": "Bearer tok_lecture"}
+        # lecture OK
+        res = self.client.get("/api/admin/entreprises", **h)
+        self.assertEqual(res.status_code, 200)
+        # écriture refusée (comptes = niveau 60)
+        res = self.client.post(
+            "/api/admin/comptes",
+            data=json.dumps({"entreprise": 1, "numero": "9999", "intitule": "X"}),
+            content_type="application/json",
+            **h,
+        )
+        self.assertEqual(res.status_code, 403)
+
+    def test_jeton_staff_comptable_ecrit_comptes(self):
+        profil = self._staff("comptable")
+        StaffToken.objects.create(profile=profil, key="tok_comptable")
+        h = {"HTTP_AUTHORIZATION": "Bearer tok_comptable"}
+        client = Client.objects.create(name="C", email="c@rbac.tn", phone="1")
+        entreprise = Entreprise.objects.create(client=client, raison_sociale="RBAC SARL")
+        res = self.client.post(
+            "/api/admin/comptes",
+            data=json.dumps({"entreprise": entreprise.id, "numero": "9998", "intitule": "Compte test"}),
+            content_type="application/json",
+            **h,
+        )
+        self.assertEqual(res.status_code, 200, res.json())
+        self.assertTrue(CompteComptable.objects.filter(numero="9998").exists())
+
+    def test_gestion_staff_admin_uniquement(self):
+        profil = self._staff("gestionnaire")
+        StaffToken.objects.create(profile=profil, key="tok_gest")
+        h = {"HTTP_AUTHORIZATION": "Bearer tok_gest"}
+        res = self.client.get("/api/admin/staff", **h)
+        self.assertEqual(res.status_code, 403)
+        # jeton admin statique : autorisé
+        res = self.client.get("/api/admin/staff", **self.h if hasattr(self, "h") else {"HTTP_AUTHORIZATION": "Bearer secret-test"})
+        self.assertEqual(res.status_code, 200)
+
+    def test_creation_staff_et_token(self):
+        h = {"HTTP_AUTHORIZATION": "Bearer secret-test"}
+        res = self.client.post(
+            "/api/admin/staff",
+            data=json.dumps({"username": "hajer", "email": "hajer@cabinet.tn", "full_name": "Hajer Ghiloufi", "password": "mdp12345678", "role": "comptable"}),
+            content_type="application/json",
+            **h,
+        )
+        self.assertEqual(res.status_code, 200, res.json())
+        profil = StaffProfile.objects.get(user__username="hajer")
+        res = self.client.post("/api/admin/staff/token", data=json.dumps({"profile": profil.id}), content_type="application/json", **h)
+        self.assertEqual(res.status_code, 200)
+        key = res.json()["key"]
+        token = StaffToken.objects.get(key=key)
+        self.assertTrue(token.is_valid)
+        res = self.client.delete("/api/admin/staff/token", data=json.dumps({"id": token.id}), content_type="application/json", **h)
+        self.assertEqual(res.status_code, 200)
+        token.refresh_from_db()
+        self.assertTrue(token.revoque)
+        self.assertFalse(token.is_valid)
+
+    def test_journal_securite_alimente(self):
+        h = {"HTTP_AUTHORIZATION": "Bearer secret-test"}
+        self.client.post("/api/auth/register", data=json.dumps({
+            "name": "S", "prenom": "T", "email": "sec@test.tn", "phone": "1",
+            "matricule_fiscale": "99X", "password": "mdp12345678",
+        }), content_type="application/json")
+        res = self.client.get("/api/admin/security/log", **h)
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(any(e["action"] == "register" for e in res.json()["items"]))
+
+
+class ClientAuthSecurityTests(TestCase):
+    def test_politique_mot_de_passe_faible_refusee(self):
+        res = self.client.post("/api/auth/register", data=json.dumps({
+            "name": "D", "prenom": "E", "email": "faible@test.tn", "phone": "1",
+            "matricule_fiscale": "12A", "password": "12345",
+        }), content_type="application/json")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("au moins 8 caractères", res.json()["error"])
+
+    def test_token_client_expire_est_rejete(self):
+        res = self.client.post("/api/auth/register", data=json.dumps({
+            "name": "D", "prenom": "E", "email": "exp@test.tn", "phone": "1",
+            "matricule_fiscale": "13B", "password": "mdp12345678",
+        }), content_type="application/json")
+        token = AuthToken.objects.get(user__email="exp@test.tn")
+        token.expires_at = timezone.now() - timedelta(days=1)
+        token.save(update_fields=["expires_at"])
+        h = {"HTTP_AUTHORIZATION": f"Bearer {token.key}"}
+        res = self.client.get("/api/client/dashboard", **h)
+        self.assertEqual(res.status_code, 401)
+        self.assertFalse(AuthToken.objects.filter(pk=token.pk).exists())
+
+    def test_login_throttle_apres_echecs(self):
+        for i in range(6):
+            res = self.client.post("/api/auth/login", data=json.dumps({
+                "email": "absent@test.tn", "password": "wrong-pass",
+            }), content_type="application/json")
+        self.assertEqual(res.status_code, 429)
+        self.assertEqual(SecurityLog.objects.filter(action="throttled").count(), 1)
+
+    def test_mot_de_passe_hache_non_renvoye(self):
+        res = self.client.post("/api/auth/register", data=json.dumps({
+            "name": "D", "prenom": "E", "email": "hash@test.tn", "phone": "1",
+            "matricule_fiscale": "14C", "password": "mdp12345678",
+        }), content_type="application/json")
+        self.assertNotIn("password", json.dumps(res.json()))
+        user = User.objects.get(email="hash@test.tn")
+        self.assertNotEqual(user.password, "mdp12345678")

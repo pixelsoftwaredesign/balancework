@@ -1,6 +1,67 @@
 from django.contrib import admin
 
-from .models import Appointment, DevisRequest, Message, Service
+from .models import (
+    Appointment,
+    CompteComptable,
+    DevisRequest,
+    EcritureComptable,
+    Entreprise,
+    LigneEcriture,
+    Message,
+    SecurityLog,
+    Service,
+    StaffProfile,
+    StaffToken,
+)
+
+
+@admin.register(Entreprise)
+class EntrepriseAdmin(admin.ModelAdmin):
+    list_display = ("raison_sociale", "client", "matricule_fiscale", "ville", "updated_at")
+    search_fields = ("raison_sociale", "matricule_fiscale", "registre_commerce")
+
+
+@admin.register(CompteComptable)
+class CompteComptableAdmin(admin.ModelAdmin):
+    list_display = ("numero", "intitule", "entreprise", "parent", "niveau")
+    list_filter = ("entreprise",)
+    search_fields = ("numero", "intitule")
+    ordering = ("entreprise", "numero")
+
+
+@admin.register(EcritureComptable)
+class EcritureComptableAdmin(admin.ModelAdmin):
+    list_display = ("numero_piece", "date", "libelle", "entreprise", "journal", "statut", "total_debit", "total_credit")
+    list_filter = ("entreprise", "journal", "statut", "date")
+    search_fields = ("numero_piece", "libelle")
+
+
+@admin.register(LigneEcriture)
+class LigneEcritureAdmin(admin.ModelAdmin):
+    list_display = ("ecriture", "compte", "debit", "credit")
+    list_filter = ("compte__entreprise",)
+    autocomplete_fields = ("compte",)
+
+
+@admin.register(StaffProfile)
+class StaffProfileAdmin(admin.ModelAdmin):
+    list_display = ("user", "role", "level", "actif", "created_at")
+    list_filter = ("role", "actif")
+    search_fields = ("user__username", "user__email")
+
+
+@admin.register(StaffToken)
+class StaffTokenAdmin(admin.ModelAdmin):
+    list_display = ("profile", "key", "created_at", "expires_at", "revoque", "last_used_at")
+    list_filter = ("revoque", "profile__role")
+    search_fields = ("key", "profile__user__username")
+
+
+@admin.register(SecurityLog)
+class SecurityLogAdmin(admin.ModelAdmin):
+    list_display = ("action", "actor", "email", "ip", "created_at")
+    list_filter = ("action", "created_at")
+    search_fields = ("email", "ip", "actor__username", "details")
 
 
 @admin.register(Service)

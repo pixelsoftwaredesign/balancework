@@ -15,6 +15,8 @@ const BalanceAdmin = (() => {
     dossier_attachments: "Pièces jointes",
     declarations: "Déclarations fiscales",
     payments: "Paiements",
+    comptabilite: "Comptabilité",
+    staff: "Staff & sécurité",
     collaborateurs: "Gestion personnel",
     devis_requests: "Demandes de devis",
     appointments: "Rendez-vous",
@@ -412,6 +414,8 @@ const BalanceAdmin = (() => {
   };
 
   const ROW_ACTIONS = {
+    clients: (item) => `
+      <button class="btn btn-sm" onclick="BalanceAdmin.showFiche(${item.id})">Fiche client</button>`,
     types_service: (item) => `
       <button class="btn btn-sm" onclick="BalanceAdmin.addSubService(${item.id}, '${escapeHtml(String(item.title)).replace(/'/g, "\\'")}')">＋ sous-service</button>
       <button class="btn btn-sm btn-danger" onclick="BalanceAdmin.deleteService(${item.id}, '${escapeHtml(String(item.title)).replace(/'/g, "\\'")}')">Supprimer</button>`,
@@ -473,6 +477,14 @@ const BalanceAdmin = (() => {
     }
     if (tab === "explorer") {
       loadExplorer();
+      return;
+    }
+    if (tab === "comptabilite") {
+      loadComptabilite();
+      return;
+    }
+    if (tab === "staff") {
+      loadStaff();
       return;
     }
     const detail = DETAIL_TABLES.includes(tab);
@@ -1330,6 +1342,583 @@ const BalanceAdmin = (() => {
     }
   }
 
+  let comptaEntrepriseId = null;
+  let comptaCurrentView = "plan";
+  let comptaLeafComptes = [];
+
+  async function loadComptabilite() {
+    currentTab = "comptabilite";
+    const toolbar = document.getElementById("tab-toolbar");
+    const wrap = document.getElementById("tab-table");
+    toolbar.innerHTML = '<small class="muted-sm">Chargement…</small>';
+    wrap.innerHTML = '<p>Chargement…</p>';
+    let entreprises = [];
+    try {
+      const data = await api("/api/admin/entreprises");
+      entreprises = data.items || [];
+    } catch (e) {
+      wrap.innerHTML = `<div class="alert show alert-error">${e.message}</div>`;
+      return;
+    }
+    if (!entreprises.length) {
+      toolbar.innerHTML = "";
+      wrap.innerHTML = `<div class="alert show">Aucune entreprise (tenant) enregistrée. Créez d'abord l'entreprise d'un client depuis l'onglet Clients → « Fiche client ».</div>`;
+      return;
+    }
+    toolbar.innerHTML = `
+      <select id="compta-entreprise" onchange="BalanceAdmin.comptaSelectEntreprise()" style="min-width:260px">
+        <option value="">— Choisir une entreprise (tenant) —</option>
+        ${entreprises.map((e) => `<option value="${e.id}" ${String(comptaEntrepriseId) === String(e.id) ? "selected" : ""}>${escapeHtml(e.raison_sociale)} (${escapeHtml(e.matricule_fiscale || "sans MF")})</option>`).join("")}
+      </select>
+      ${comptaEntrepriseId ? `<button class="btn btn-sm btn-outline" onclick="BalanceAdmin.comptaInitPlan()">Réinitialiser le plan</button>` : ""}
+      <button class="btn btn-sm btn-outline" onclick="BalanceAdmin.loadComptabilite()">Rafraîchir</button>`;
+    wrap.innerHTML = comptaViewHtml();
+    if (comptaEntrepriseId) await comptaRenderView();
+  }
+
+  function comptaViewHtml() {
+    const tabs = [
+      ["plan", "Plan comptable"],
+      ["ecritures", "Journaux & pièces"],
+      ["grand-livre", "Grand livre / Balance"],
+      ["bilan", "Bilan & résultat"],
+    ];
+    return `<div class="compta-tabs" style="display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap">
+      ${tabs.map(([k, l]) => `<button class="btn btn-sm ${comptaCurrentView === k ? "" : "btn-outline"}" data-view="${k}" onclick="BalanceAdmin.comptaView('${k}')">${l}</button>`).join("")}
+    </div><div id="compta-body"></div>`;
+  }
+
+  async function comptaSelectEntreprise() {
+    comptaEntrepriseId = document.getElementById("compta-entreprise").value || null;
+    await comptaRenderView();
+  }
+
+  function comptaView(view) {
+    comptaCurrentView = view;
+    document.querySelectorAll(".compta-tabs button").forEach((b) => {
+      b.classList.toggle("btn-outline", b.getAttribute("data-view") !== view);
+    });
+    comptaRenderView();
+  }
+
+  async function comptaRenderView() {
+    const body = document.getElementById("compta-body");
+    if (!body) return;
+    if (!comptaEntrepriseId) {
+      body.innerHTML = '<p class="muted-sm">Choisissez une entreprise pour afficher sa comptabilité.</p>';
+      return;
+    }
+    body.innerHTML = "<p>Chargement…</p>";
+    try {
+      if (comptaCurrentView === "plan") await comptaPlanView();
+      else if (comptaCurrentView === "ecritures") await comptaEcrituresView();
+      else if (comptaCurrentView === "grand-livre") await comptaGrandLivreView();
+      else if (comptaCurrentView === "bilan") await comptaBilanView();
+    } catch (e) {
+      body.innerHTML = `<div class="alert show alert-error">${e.message}</div>`;
+    }
+  }
+
+  async function comptaPlanView() {
+    const body = document.getElementById("compta-body");
+    const data = await api(`/api/admin/comptabilite/plan/${comptaEntrepriseId}`);
+    const plan = data.plan || [];
+    body.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        <strong>Plan comptable tunisien — ${escapeHtml(data.entreprise.raison_sociale)} (${data.total} comptes)</strong>
+        <button class="btn btn-sm" onclick="BalanceAdmin.comptaAddCompte(null, ${comptaEntrepriseId})">＋ Ajouter une classe / compte racine</button>
+      </div>
+      <div id="compta-compte-form"></div>
+      ${plan.length ? `<ul class="plan-tree">${plan.map((n) => comptaPlanRow(n, 0)).join("")}</ul>` : `<p class="muted-sm">Aucun compte. Cliquez sur « Réinitialiser le plan » pour générer le plan standard.</p>`}`;
+  }
+
+  function comptaPlanRow(n, depth) {
+    const pad = depth * 18;
+    return `<li>
+      <div class="plan-row" style="margin-left:${pad}px">
+        <span class="plan-num">${escapeHtml(n.numero)}</span>
+        <span class="plan-int">${escapeHtml(n.intitule)}</span>
+        ${n.active ? "" : ' <span class="badge annule">inactif</span>'}
+        <span class="explorer-actions">
+          <button class="btn btn-sm btn-outline" onclick="BalanceAdmin.comptaEditCompte(${n.id}, ${comptaEntrepriseId})">Modifier</button>
+          <button class="btn btn-sm btn-outline" onclick="BalanceAdmin.comptaAddCompte(${n.id}, ${comptaEntrepriseId})">＋ Sous-compte</button>
+          <button class="btn btn-sm btn-danger" onclick="BalanceAdmin.comptaDeleteCompte(${n.id}, ${comptaEntrepriseId})">Supprimer</button>
+        </span>
+      </div>
+      ${n.enfants && n.enfants.length ? `<ul>${n.enfants.map((e) => comptaPlanRow(e, depth + 1)).join("")}</ul>` : ""}
+    </li>`;
+  }
+
+  async function comptaAddCompte(parentId, entrepriseId) {
+    const slot = document.getElementById("compta-compte-form");
+    if (!slot) return;
+    slot.innerHTML = `<div class="card explorer-form">
+      <h4 style="margin:0 0 10px">Ajouter un compte${parentId ? " (sous-compte)" : " (classe / racine)"}</h4>
+      <form id="compta-compte-form-f" class="form-grid" style="margin:0">
+        <div class="form-group"><label>Numéro *</label><input name="numero" type="text" required /></div>
+        <div class="form-group"><label>Intitulé *</label><input name="intitule" type="text" required /></div>
+        <input type="hidden" name="parent" value="${parentId || ""}" />
+        <div class="form-group full" style="display:flex;gap:8px">
+          <button class="btn" type="submit">Enregistrer</button>
+          <button class="btn btn-outline" type="button" onclick="BalanceAdmin.comptaCompteFormCancel()">Annuler</button>
+        </div>
+      </form>
+    </div>`;
+    slot.querySelector("#compta-compte-form-f").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const payload = { entreprise: entrepriseId };
+      new FormData(slot.querySelector("#compta-compte-form-f")).forEach((v, k) => { payload[k] = v; });
+      comptaSaveCompte(payload);
+    });
+  }
+
+  async function comptaEditCompte(id, entrepriseId) {
+    const slot = document.getElementById("compta-compte-form");
+    if (!slot) return;
+    try {
+      const data = await api(`/api/admin/comptes?q=${id}`);
+      const row = (data.items || []).find((r) => String(r.id) === String(id)) || {};
+      slot.innerHTML = `<div class="card explorer-form">
+        <h4 style="margin:0 0 10px">Modifier le compte ${escapeHtml(row.numero || "")}</h4>
+        <form id="compta-compte-form-f" class="form-grid" style="margin:0">
+          <div class="form-group"><label>Numéro *</label><input name="numero" type="text" required value="${escapeHtml(row.numero || "")}" /></div>
+          <div class="form-group"><label>Intitulé *</label><input name="intitule" type="text" required value="${escapeHtml(row.intitule || "")}" /></div>
+          <div class="form-group"><label>Actif</label><select name="active">
+            <option value="true" ${row.active ? "selected" : ""}>Oui</option>
+            <option value="false" ${!row.active ? "selected" : ""}>Non</option>
+          </select></div>
+          <div class="form-group full" style="display:flex;gap:8px">
+            <button class="btn" type="submit">Enregistrer</button>
+            <button class="btn btn-outline" type="button" onclick="BalanceAdmin.comptaCompteFormCancel()">Annuler</button>
+          </div>
+        </form>
+      </div>`;
+      slot.querySelector("#compta-compte-form-f").addEventListener("submit", (e) => {
+        e.preventDefault();
+        const fd = new FormData(slot.querySelector("#compta-compte-form-f"));
+        comptaSaveCompte({ id, numero: fd.get("numero"), intitule: fd.get("intitule"), active: fd.get("active") }, true);
+      });
+    } catch (e) { alert(e.message); }
+  }
+
+  async function comptaSaveCompte(payload, isEdit) {
+    try {
+      if (isEdit) {
+        for (const field of ["numero", "intitule", "active"]) {
+          await api("/api/admin/comptes", { method: "PUT", body: JSON.stringify({ id: payload.id, field, status: payload[field] }) });
+        }
+      } else {
+        await api("/api/admin/comptes", { method: "POST", body: JSON.stringify(payload) });
+      }
+      await comptaRenderView();
+    } catch (e) { alert(e.message); }
+  }
+
+  function comptaCompteFormCancel() {
+    const slot = document.getElementById("compta-compte-form");
+    if (slot) slot.innerHTML = "";
+  }
+
+  async function comptaDeleteCompte(id, entrepriseId) {
+    if (!confirm("Supprimer ce compte ? Les comptes liés à des écritures ne peuvent pas être supprimés.")) return;
+    try {
+      await api("/api/admin/comptes", { method: "DELETE", body: JSON.stringify({ id }) });
+      await comptaRenderView();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function comptaInitPlan() {
+    try {
+      await api(`/api/admin/comptabilite/plan/init/${comptaEntrepriseId}`, { method: "POST" });
+      await comptaRenderView();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function comptaEcrituresView() {
+    const body = document.getElementById("compta-body");
+    const data = await api(`/api/admin/ecritures?entreprise=${comptaEntrepriseId}`);
+    const items = data.items || [];
+    body.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        <strong>Journaux & pièces comptables</strong>
+        <button class="btn btn-sm" onclick="BalanceAdmin.comptaEcritureForm()">＋ Nouvelle pièce</button>
+      </div>
+      <div id="compta-ecriture-form"></div>
+      <table class="admin-table"><thead><tr><th>N°</th><th>Date</th><th>Journal</th><th>Pièce</th><th>Libellé</th><th>Débit</th><th>Crédit</th><th>Statut</th><th></th></tr></thead><tbody>
+        ${items.map((w) => `<tr>
+          <td><strong>N°${w.id}</strong></td>
+          <td>${w.date}</td>
+          <td>${escapeHtml(w.journal.replace(/_/g, " "))}</td>
+          <td>${escapeHtml(w.numero_piece)}</td>
+          <td>${escapeHtml(w.libelle)}</td>
+          <td>${w.total_debit}</td>
+          <td>${w.total_credit}</td>
+          <td>
+            <select class="status-select" data-table="ecritures" data-field="statut" data-id="${w.id}" onchange="BalanceAdmin.saveField(this)">
+              <option value="brouillon" ${w.statut === "brouillon" ? "selected" : ""}>Brouillon</option>
+              <option value="valide" ${w.statut === "valide" ? "selected" : ""}>Validé</option>
+            </select>
+          </td>
+          <td>
+            <button class="btn btn-sm btn-outline" onclick="BalanceAdmin.comptaVoirEcriture(${w.id})">Lignes</button>
+            <button class="btn btn-sm btn-danger" onclick="BalanceAdmin.comptaDeleteEcriture(${w.id})">Supprimer</button>
+          </td>
+        </tr>`).join("") || '<tr><td colspan="9"><p class="muted-sm">Aucune écriture.</p></td></tr>'}
+      </tbody></table>`;
+  }
+
+  async function comptaEcritureForm() {
+    const slot = document.getElementById("compta-ecriture-form");
+    if (!slot) return;
+    if (!comptaLeafComptes.length) {
+      const data = await api(`/api/admin/comptes?entreprise=${comptaEntrepriseId}`);
+      comptaLeafComptes = (data.items || []).filter((c) => c.is_leaf);
+    }
+    const compteOpts = `<option value="">— Compte —</option>` + comptaLeafComptes.map((c) => `<option value="${c.id}">${c.numero} — ${escapeHtml(c.intitule)}</option>`).join("");
+    slot.innerHTML = `<div class="card explorer-form">
+      <h4 style="margin:0 0 10px">Nouvelle pièce comptable</h4>
+      <form id="compta-ecriture-form-f" class="form-grid" style="margin:0">
+        <div class="form-group"><label>Journal *</label><select name="journal">
+          <option value="od">Opérations diverses (OD)</option>
+          <option value="ventes">Ventes</option>
+          <option value="achats">Achats</option>
+          <option value="banque">Banque</option>
+          <option value="caisse">Caisse</option>
+        </select></div>
+        <div class="form-group"><label>N° pièce *</label><input name="numero_piece" type="text" required /></div>
+        <div class="form-group"><label>Date *</label><input name="date" type="date" required value="${new Date().toISOString().slice(0, 10)}" /></div>
+        <div class="form-group full"><label>Libellé *</label><input name="libelle" type="text" required /></div>
+        <div class="form-group full"><label>Lignes d'écriture (le total débit doit être égal au total crédit)</label>
+          <table class="admin-table" id="compta-lignes"><thead><tr><th>Compte</th><th>Libellé</th><th>Débit</th><th>Crédit</th><th></th></tr></thead><tbody></tbody></table>
+        </div>
+        <div class="form-group full" style="display:flex;gap:8px;align-items:center">
+          <button class="btn btn-sm btn-outline" type="button" onclick="BalanceAdmin.comptaAddEcritureLine('${escapeHtml(compteOpts)}')">＋ Ajouter une ligne</button>
+          <span class="muted-sm">Total débit : <strong id="compta-total-debit">0.000</strong> — Total crédit : <strong id="compta-total-credit">0.000</strong></span>
+        </div>
+        <div class="form-group full" style="display:flex;gap:8px">
+          <button class="btn" type="submit">Enregistrer la pièce</button>
+          <button class="btn btn-outline" type="button" onclick="BalanceAdmin.comptaEcritureFormCancel()">Annuler</button>
+        </div>
+      </form>
+    </div>`;
+    slot.querySelector("#compta-ecriture-form-f").addEventListener("submit", (e) => {
+      e.preventDefault();
+      comptaSaveEcriture();
+    });
+    comptaAddEcritureLine(compteOpts);
+    comptaAddEcritureLine(compteOpts);
+  }
+
+  function comptaAddEcritureLine(compteOpts) {
+    const tbody = document.querySelector("#compta-lignes tbody");
+    if (!tbody) return;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><select class="compta-ligne-compte">${compteOpts}</select></td>
+      <td><input class="compta-ligne-libelle" type="text" style="min-width:160px" /></td>
+      <td><input class="compta-ligne-debit" type="number" step="0.001" min="0" value="0" style="width:110px" oninput="BalanceAdmin.comptaUpdateTotaux()" /></td>
+      <td><input class="compta-ligne-credit" type="number" step="0.001" min="0" value="0" style="width:110px" oninput="BalanceAdmin.comptaUpdateTotaux()" /></td>
+      <td><button class="btn btn-sm btn-danger" type="button" onclick="BalanceAdmin.comptaRemoveLigne(this)">✕</button></td>`;
+    tbody.appendChild(tr);
+    comptaUpdateTotaux();
+  }
+
+  function comptaRemoveLigne(btn) {
+    const tr = btn.closest("tr");
+    if (tr && document.querySelectorAll("#compta-lignes tbody tr").length > 1) {
+      tr.remove();
+      comptaUpdateTotaux();
+    }
+  }
+
+  function comptaUpdateTotaux() {
+    const rows = document.querySelectorAll("#compta-lignes tbody tr");
+    let d = 0, c = 0;
+    rows.forEach((tr) => {
+      d += parseFloat(tr.querySelector(".compta-ligne-debit").value) || 0;
+      c += parseFloat(tr.querySelector(".compta-ligne-credit").value) || 0;
+    });
+    const dl = document.getElementById("compta-total-debit");
+    const cl = document.getElementById("compta-total-credit");
+    if (dl) dl.textContent = d.toFixed(3);
+    if (cl) cl.textContent = c.toFixed(3);
+    if (dl && cl) {
+      const ok = Math.abs(d - c) < 0.001;
+      dl.closest("span").style.color = ok ? "" : "#c0392b";
+      cl.closest("span").style.color = ok ? "" : "#c0392b";
+    }
+  }
+
+  async function comptaSaveEcriture() {
+    const rows = document.querySelectorAll("#compta-lignes tbody tr");
+    const lignes = [];
+    for (const tr of rows) {
+      const compte = tr.querySelector(".compta-ligne-compte").value;
+      if (!compte) continue;
+      lignes.push({
+        compte: parseInt(compte, 10),
+        libelle: tr.querySelector(".compta-ligne-libelle").value,
+        debit: tr.querySelector(".compta-ligne-debit").value,
+        credit: tr.querySelector(".compta-ligne-credit").value,
+      });
+    }
+    const fd = new FormData(document.getElementById("compta-ecriture-form-f"));
+    const payload = {
+      entreprise: parseInt(comptaEntrepriseId, 10),
+      journal: fd.get("journal"),
+      numero_piece: fd.get("numero_piece"),
+      date: fd.get("date"),
+      libelle: fd.get("libelle"),
+      statut: "brouillon",
+      lignes,
+    };
+    try {
+      await api("/api/admin/ecritures", { method: "POST", body: JSON.stringify(payload) });
+      document.getElementById("compta-ecriture-form").innerHTML = "";
+      await comptaRenderView();
+    } catch (e) { alert(e.message); }
+  }
+
+  function comptaEcritureFormCancel() {
+    const slot = document.getElementById("compta-ecriture-form");
+    if (slot) slot.innerHTML = "";
+  }
+
+  async function comptaVoirEcriture(id) {
+    try {
+      const data = await api(`/api/admin/ecritures?q=${id}`);
+      const w = (data.items || []).find((r) => String(r.id) === String(id));
+      if (!w) return;
+      showDetail("ecritures", w, false);
+    } catch (e) { alert(e.message); }
+  }
+
+  async function comptaDeleteEcriture(id) {
+    if (!confirm("Supprimer cette pièce et ses lignes ?")) return;
+    try {
+      await api("/api/admin/ecritures", { method: "DELETE", body: JSON.stringify({ id }) });
+      await comptaRenderView();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function comptaGrandLivreView() {
+    const body = document.getElementById("compta-body");
+    const from = document.getElementById("compta-gl-from")?.value || "";
+    const to = document.getElementById("compta-gl-to")?.value || "";
+    const qs = new URLSearchParams();
+    if (from) qs.set("from", from);
+    if (to) qs.set("to", to);
+    const url = `/api/admin/comptabilite/grand-livre/${comptaEntrepriseId}${qs.toString() ? "?" + qs.toString() : ""}`;
+    const data = await api(url);
+    body.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        <strong>Grand livre / Balance — ${escapeHtml(data.entreprise.raison_sociale)}</strong>
+        <span style="display:flex;gap:8px;align-items:center">
+          <label class="muted-sm">Du <input id="compta-gl-from" type="date" value="${from}" onchange="BalanceAdmin.comptaGrandLivreView()" /></label>
+          <label class="muted-sm">Au <input id="compta-gl-to" type="date" value="${to}" onchange="BalanceAdmin.comptaGrandLivreView()" /></label>
+        </span>
+      </div>
+      <table class="admin-table"><thead><tr><th>Compte</th><th>Intitulé</th><th>Débit</th><th>Crédit</th><th>Solde débiteur</th><th>Solde créditeur</th></tr></thead><tbody>
+        ${(data.comptes || []).map((c) => `<tr>
+          <td><strong>${escapeHtml(c.numero)}</strong></td>
+          <td>${escapeHtml(c.intitule)}</td>
+          <td>${c.debit}</td>
+          <td>${c.credit}</td>
+          <td>${c.solde_debiteur}</td>
+          <td>${c.solde_crediteur}</td>
+        </tr>`).join("") || '<tr><td colspan="6"><p class="muted-sm">Aucun mouvement validé.</p></td></tr>'}
+      </tbody><tfoot><tr><td colspan="2"><strong>Totaux</strong></td>
+        <td><strong>${data.total_debit || "0.000"}</strong></td>
+        <td><strong>${data.total_credit || "0.000"}</strong></td>
+        <td colspan="2"></td></tr></tfoot></table>
+      <h4 style="margin:16px 0 8px">Détail des mouvements (${(data.mouvements || []).length})</h4>
+      <table class="admin-table"><thead><tr><th>Date</th><th>Pièce</th><th>Compte</th><th>Libellé</th><th>Débit</th><th>Crédit</th></tr></thead><tbody>
+        ${(data.mouvements || []).map((m) => `<tr>
+          <td>${m.date}</td><td>${escapeHtml(m.piece)}</td>
+          <td><strong>${escapeHtml(m.numero)}</strong></td>
+          <td>${escapeHtml(m.libelle)}</td>
+          <td>${m.debit}</td><td>${m.credit}</td>
+        </tr>`).join("") || '<tr><td colspan="6"><p class="muted-sm">Aucun mouvement.</p></td></tr>'}
+      </tbody></table>`;
+  }
+
+  async function comptaBilanView() {
+    const body = document.getElementById("compta-body");
+    const data = await api(`/api/admin/comptabilite/bilan/${comptaEntrepriseId}`);
+    const bl = data.bilan || {};
+    const res = data.resultat || {};
+    const srows = (detail) => (detail || []).map((d) => `<tr><td>${escapeHtml(d.numero)}</td><td>${escapeHtml(d.intitule)}</td><td style="text-align:right">${d.montant}</td></tr>`).join("");
+    const section = (label, sec) => `
+      <div class="card"><h4 style="margin:0 0 8px">${escapeHtml(label)}</h4>
+        <table class="admin-table"><tbody>
+          ${srows(sec.detail)}
+          ${(sec.detail && sec.detail.length) ? "" : '<tr><td colspan="3"><span class="muted-sm">—</span></td></tr>'}
+        </tbody><tfoot><tr><td colspan="2"><strong>Total</strong></td><td style="text-align:right"><strong>${sec.total}</strong></td></tr></tfoot></table>
+      </div>`;
+    body.innerHTML = `
+      <div style="margin-bottom:12px"><strong>Bilan & compte de résultat — ${escapeHtml(data.entreprise.raison_sociale)}</strong>
+        <span class="muted-sm"> (écritures validées uniquement)</span></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start">
+        <div>${(bl.actif || []).map((s) => section(s.label, s)).join("")}</div>
+        <div>${(bl.passif || []).map((s) => section(s.label, s)).join("")}</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start;margin-top:16px">
+        ${section("Charges (classe 6)", res.charges || { detail: [], total: "0.000" })}
+        ${section("Produits (classe 7)", res.produits || { detail: [], total: "0.000" })}
+      </div>
+      <div class="card" style="margin-top:16px">
+        <table class="admin-table"><tfoot>
+          <tr><td><strong>Total actif</strong></td><td style="text-align:right"><strong>${bl.total_actif || "0.000"}</strong></td></tr>
+          <tr><td><strong>Total passif (incl. résultat)</strong></td><td style="text-align:right"><strong>${bl.total_passif || "0.000"}</strong></td></tr>
+          <tr><td><strong>Résultat net de l'exercice</strong></td><td style="text-align:right"><strong>${res.resultat || "0.000"}</strong></td></tr>
+        </tfoot></table>
+      </div>`;
+  }
+
+  let staffRoles = {};
+
+  async function loadStaff() {
+    currentTab = "staff";
+    stopLive();
+    const wrap = document.getElementById("tab-content");
+    wrap.innerHTML = `<div id="tab-toolbar"></div><div id="tab-table"><p>Chargement…</p></div>`;
+    try {
+      const data = await api("/api/admin/staff");
+      staffRoles = data.roles || {};
+      renderStaff(data.items || []);
+      const logs = await api("/api/admin/security/log");
+      renderSecurityLog(logs.items || []);
+    } catch (e) {
+      document.getElementById("tab-table").innerHTML = `<div class="alert show alert-error">${e.message} — réservé aux administrateurs.</div>`;
+    }
+  }
+
+  function renderStaff(items) {
+    const wrap = document.getElementById("tab-table");
+    wrap.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        <strong>Membres du cabinet (RBAC)</strong>
+        <button class="btn btn-sm" onclick="BalanceAdmin.staffCreateForm()">＋ Ajouter un membre</button>
+      </div>
+      <div id="staff-form"></div>
+      <table class="admin-table"><thead><tr><th>Membre</th><th>Rôle</th><th>Niveau</th><th>Actif</th><th>Jetons</th><th></th></tr></thead><tbody>
+        ${items.map((p) => `<tr>
+          <td><strong>${escapeHtml(p.full_name)}</strong><br /><span class="muted-sm">${escapeHtml(p.email)}</span></td>
+          <td>
+            <select class="status-select" data-id="${p.id}" onchange="BalanceAdmin.staffChangeRole(${p.id}, this)">
+              ${Object.entries(staffRoles).map(([r]) => `<option value="${r}" ${p.role === r ? "selected" : ""}>${r}</option>`).join("")}
+            </select>
+          </td>
+          <td>${p.level}</td>
+          <td>
+            <select class="status-select" data-id="${p.id}" onchange="BalanceAdmin.staffToggleActif(${p.id}, this)">
+              <option value="true" ${p.actif ? "selected" : ""}>Oui</option>
+              <option value="false" ${!p.actif ? "selected" : ""}>Non</option>
+            </select>
+          </td>
+          <td>${(p.tokens || []).map((t) => `<span class="muted-sm">${escapeHtml(t.key)} (exp. ${t.expires_at})${t.revoque ? " — révoqué" : ""}</span> <button class="btn btn-sm btn-danger" onclick="BalanceAdmin.staffRevokeToken(${t.id})">Révoquer</button>`).join("<br />") || '<span class="muted-sm">Aucun jeton</span>'}
+            <button class="btn btn-sm btn-outline" onclick="BalanceAdmin.staffGenToken(${p.id})">＋ Jeton</button>
+          </td>
+          <td><button class="btn btn-sm btn-danger" onclick="BalanceAdmin.staffDelete(${p.id}, '${String(p.full_name).replace(/'/g, "\\'")}')">Supprimer</button></td>
+        </tr>`).join("") || '<tr><td colspan="6"><p class="muted-sm">Aucun membre. Utilisez le jeton ADMIN_TOKEN statique en attendant.</p></td></tr>'}
+      </tbody></table>`;
+  }
+
+  function renderSecurityLog(items) {
+    const container = document.createElement("div");
+    container.id = "sec-log";
+    container.style.marginTop = "20px";
+    container.innerHTML = `
+      <strong>Journal de sécurité (100 dernières entrées)</strong>
+      <table class="admin-table" style="margin-top:8px"><thead><tr><th>Action</th><th>Acteur</th><th>E-mail</th><th>IP</th><th>Détails</th><th>Quand</th></tr></thead><tbody>
+        ${items.map((e) => `<tr>
+          <td>${escapeHtml(e.action_label)}</td>
+          <td>${escapeHtml(e.actor)}</td>
+          <td>${escapeHtml(e.email)}</td>
+          <td>${escapeHtml(e.ip)}</td>
+          <td class="muted-sm">${escapeHtml(e.details)}</td>
+          <td>${e.created_at}</td>
+        </tr>`).join("") || '<tr><td colspan="6"><p class="muted-sm">Aucun événement.</p></td></tr>'}
+      </tbody></table>`;
+    const table = document.getElementById("tab-table");
+    table.appendChild(container);
+  }
+
+  function staffCreateForm() {
+    const slot = document.getElementById("staff-form");
+    slot.innerHTML = `<div class="card explorer-form">
+      <h4 style="margin:0 0 10px">Ajouter un membre du cabinet</h4>
+      <form id="staff-form-f" class="form-grid" style="margin:0">
+        <div class="form-group"><label>Nom complet *</label><input name="full_name" type="text" required /></div>
+        <div class="form-group"><label>E-mail *</label><input name="email" type="email" required /></div>
+        <div class="form-group"><label>Nom d'utilisateur *</label><input name="username" type="text" required /></div>
+        <div class="form-group"><label>Mot de passe *</label><input name="password" type="password" required minlength="8" /></div>
+        <div class="form-group"><label>Rôle *</label><select name="role">
+          <option value="lecture">lecture</option>
+          <option value="comptable">comptable</option>
+          <option value="gestionnaire">gestionnaire</option>
+          <option value="admin">admin</option>
+        </select></div>
+        <div class="form-group full" style="display:flex;gap:8px">
+          <button class="btn" type="submit">Créer</button>
+          <button class="btn btn-outline" type="button" onclick="BalanceAdmin.staffFormCancel()">Annuler</button>
+        </div>
+      </form>
+    </div>`;
+    slot.querySelector("#staff-form-f").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const fd = new FormData(slot.querySelector("#staff-form-f"));
+      staffSave({ username: fd.get("username"), email: fd.get("email"), full_name: fd.get("full_name"), password: fd.get("password"), role: fd.get("role") });
+    });
+  }
+
+  function staffFormCancel() {
+    document.getElementById("staff-form").innerHTML = "";
+  }
+
+  async function staffSave(payload) {
+    try {
+      await api("/api/admin/staff", { method: "POST", body: JSON.stringify(payload) });
+      document.getElementById("staff-form").innerHTML = "";
+      loadStaff();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function staffGenToken(profileId) {
+    try {
+      const data = await api("/api/admin/staff/token", { method: "POST", body: JSON.stringify({ profile: profileId }) });
+      alert(`Jeton créé. Copiez-le maintenant (il ne sera plus affiché) :\n\n${data.key}`);
+      loadStaff();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function staffRevokeToken(id) {
+    try {
+      await api("/api/admin/staff/token", { method: "DELETE", body: JSON.stringify({ id }) });
+      loadStaff();
+    } catch (e) { alert(e.message); }
+  }
+
+  async function staffChangeRole(id, sel) {
+    try {
+      await api("/api/admin/staff", { method: "PUT", body: JSON.stringify({ id, field: "role", status: sel.value }) });
+    } catch (e) { alert(e.message); loadStaff(); }
+  }
+
+  async function staffToggleActif(id, sel) {
+    try {
+      await api("/api/admin/staff", { method: "PUT", body: JSON.stringify({ id, field: "actif", status: sel.value }) });
+    } catch (e) { alert(e.message); loadStaff(); }
+  }
+
+  async function staffDelete(id, name) {
+    if (!confirm(`Supprimer le membre « ${name} » ?`)) return;
+    try {
+      await api("/api/admin/staff", { method: "DELETE", body: JSON.stringify({ id }) });
+      loadStaff();
+    } catch (e) { alert(e.message); }
+  }
+
   async function markTaskDone(id) {
     if (!confirm("Marquer cette tâche comme terminée ?")) return;
     try {
@@ -1348,5 +1937,5 @@ const BalanceAdmin = (() => {
     }
   });
 
-  return { login, logout, switchTab, saveField, toggleCreate, showDetail, closeDetail, applyFilters, toggleLive, addSubService, deleteService, replyMessage, loadExplorer, explorerDossiers, explorerDossier, explorerAdd, explorerEdit, explorerDelete, explorerCancel, deleteCollaborateur, markTaskDone };
+  return { login, logout, switchTab, saveField, toggleCreate, showDetail, closeDetail, applyFilters, toggleLive, addSubService, deleteService, replyMessage, loadExplorer, explorerDossiers, explorerDossier, explorerAdd, explorerEdit, explorerDelete, explorerCancel, deleteCollaborateur, markTaskDone, loadComptabilite, comptaSelectEntreprise, comptaView, comptaInitPlan, comptaAddCompte, comptaEditCompte, comptaDeleteCompte, comptaCompteFormCancel, comptaEcritureForm, comptaAddEcritureLine, comptaRemoveLigne, comptaUpdateTotaux, comptaEcritureFormCancel, comptaVoirEcriture, comptaDeleteEcriture, comptaGrandLivreView, comptaBilanView, loadStaff, staffCreateForm, staffFormCancel, staffSave, staffGenToken, staffRevokeToken, staffChangeRole, staffToggleActif, staffDelete };
 })();

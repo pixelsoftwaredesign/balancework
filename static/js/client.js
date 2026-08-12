@@ -28,8 +28,24 @@ const BalanceClient = (() => {
       },
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || "Erreur");
+    if (!res.ok) {
+      if (res.status === 401 && token()) {
+        sessionExpired();
+        throw new Error("Votre session a expiré. Veuillez vous reconnecter.");
+      }
+      throw new Error(data.error || "Erreur");
+    }
     return data;
+  }
+
+  function sessionExpired() {
+    stopAutoRefresh();
+    localStorage.removeItem(TOKEN_KEY);
+    const db = document.getElementById("dashboard-box");
+    const auth = document.getElementById("auth-box");
+    if (db) db.style.display = "none";
+    if (auth) auth.style.display = "";
+    showAlert("client-alert", "error", "Votre session a expiré. Veuillez vous reconnecter.");
   }
 
   async function apiForm(path, formData) {
