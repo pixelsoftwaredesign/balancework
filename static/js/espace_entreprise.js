@@ -5,6 +5,8 @@ const BalanceEntrep = (() => {
   let comptaData = null;
   let comptaSub = "plan";
   let leafComptes = [];
+  let facturesData = null;
+  let tejData = null;
 
   function token() {
     return localStorage.getItem(TOKEN_KEY) || "";
@@ -124,23 +126,24 @@ const BalanceEntrep = (() => {
   }
 
   function showTab(tab) {
-    const cBtn = document.getElementById("tab-compta");
-    const dBtn = document.getElementById("tab-dossiers");
-    const cBox = document.getElementById("compta-content");
-    const dBox = document.getElementById("dossiers-content");
-    if (tab === "compta") {
-      cBtn.className = "btn btn-sm";
-      dBtn.className = "btn btn-sm btn-outline";
-      cBox.style.display = "";
-      dBox.style.display = "none";
-      loadCompta();
-    } else {
-      dBtn.className = "btn btn-sm";
-      cBtn.className = "btn btn-sm btn-outline";
-      dBox.style.display = "";
-      cBox.style.display = "none";
-      loadDossiers();
-    }
+    const tabs = {
+      compta: ["compta-content", "tab-compta"],
+      factures: ["factures-content", "tab-factures"],
+      tej: ["tej-content", "tab-tej"],
+      dossiers: ["dossiers-content", "tab-dossiers"],
+    };
+    Object.keys(tabs).forEach((key) => {
+      const [boxId, btnId] = tabs[key];
+      const box = document.getElementById(boxId);
+      const btn = document.getElementById(btnId);
+      const active = key === tab;
+      if (box) box.style.display = active ? "" : "none";
+      if (btn) btn.className = active ? "btn btn-sm" : "btn btn-sm btn-outline";
+    });
+    if (tab === "compta") loadCompta();
+    else if (tab === "factures") loadFactures();
+    else if (tab === "tej") loadTej();
+    else loadDossiers();
   }
 
   // ---------------- Comptabilité tenant ----------------
@@ -597,6 +600,310 @@ const BalanceEntrep = (() => {
       </div>`;
   }
 
+  // ---------------- Facturation tenant ----------------
+
+  const TAUX_RS_JS = { acquisition: 1, honoraires_reel: 3, honoraires_forfait: 10, loyer: 10, dividendes: 10, cession: 5, non_resident: 10 };
+  const TIMBRE_JS = 1;
+  const SEUIL_JS = 1000;
+
+  async function loadFactures() {
+    const wrap = document.getElementById("factures-content");
+    try {
+      facturesData = await api("/api/client/factures");
+    } catch (e) {
+      wrap.innerHTML = `<div class="alert show alert-error">${escapeHtml(e.message)}</div>`;
+      return;
+    }
+    const items = facturesData.factures || [];
+    wrap.innerHTML = `
+      <div class="card" style="margin-bottom:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+          <div>
+            <h3 style="margin:0">Facturation</h3>
+            <p class="muted-sm" style="margin:6px 0 0">Ventes et achats avec TVA, droit de timbre (1 TND ≥ 1 000 TND TTC) et retenue à la source. ${items.length} facture(s).</p>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-sm" onclick="BalanceEntrep.factureForm('vente')">＋ Facture de vente</button>
+            <button class="btn btn-sm btn-outline" onclick="BalanceEntrep.factureForm('achat')">＋ Facture d'achat</button>
+            <button class="btn btn-sm btn-outline" onclick="BalanceEntrep.loadFactures()">⟳ Recharger</button>
+          </div>
+        </div>
+      </div>
+      <div id="facture-form"></div>
+      <table class="admin-table"><thead><tr>
+        <th>N°</th><th>Type</th><th>Date</th><th>Tiers</th><th>Nature</th>
+        <th>HT</th><th>TVA</th><th>TTC</th><th>Timbre</th><th>Retenue</th><th>Net</th><th>Statut</th><th></th>
+      </tr></thead><tbody>
+        ${items.map((f) => factureRow(f)).join("") || '<tr><td colspan="13"><p class="muted-sm">Aucune facture.</p></td></tr>'}
+      </tbody></table>`;
+  }
+
+  function factureRow(f) {
+    const badge = f.statut === "valide" ? "confirme" : f.statut === "annulee" ? "annule" : "nouveau";
+    const ecr = f.ecriture_id ? ` <span class="badge confirme">Écriture N°${f.ecriture_id}</span>` : "";
+    const rsBadge = parseFloat(f.retenue_source_montant) > 0 ? ` (${f.retenue_source_taux} %)` : "";
+    return `<tr>
+      <td><strong>${escapeHtml(f.numero)}</strong>${ecr}</td>
+      <td>${f.type_facture === "vente" ? "Vente" : "Achat"}</td>
+      <td>${f.date}</td>
+      <td>${escapeHtml(f.tiers)}<br><span class="muted-sm">${escapeHtml(f.tiers_identifiant || "—")}</span></td>
+      <td>${f.type_facture === "achat" ? escapeHtml(f.nature_label) : "—"}</td>
+      <td>${f.montant_ht}</td>
+      <td>${f.montant_tva}</td>
+      <td><strong>${f.montant_ttc}</strong></td>
+      <td>${f.timbre_fiscal}</td>
+      <td>${f.retenue_source_montant}${rsBadge}</td>
+      <td><strong>${f.net_a_payer}</strong></td>
+      <td>
+        <select class="status-select" onchange="BalanceEntrep.factureStatut(${f.id}, this.value)">
+          <option value="brouillon" ${f.statut === "brouillon" ? "selected" : ""}>Brouillon</option>
+          <option value="valide" ${f.statut === "valide" ? "selected" : ""}>Validée</option>
+          <option value="annulee" ${f.statut === "annulee" ? "selected" : ""}>Annulée</option>
+        </select>
+      </td>
+      <td>
+        <button class="btn btn-sm btn-danger" onclick="BalanceEntrep.factureDelete(${f.id})">Supprimer</button>
+      </td>
+    </tr>`;
+  }
+
+  function factureForm(type) {
+    const slot = document.getElementById("facture-form");
+    if (!slot) return;
+    slot.innerHTML = `<div class="card explorer-form">
+      <h4 style="margin:0 0 10px">${type === "vente" ? "Nouvelle facture de vente" : "Nouvelle facture d'achat"}</h4>
+      <form id="facture-form-f" class="form-grid" style="margin:0">
+        <input type="hidden" name="type_facture" value="${type}" />
+        <div class="form-group"><label>N° facture *</label><input name="numero" type="text" required /></div>
+        <div class="form-group"><label>Date *</label><input name="date" type="date" required value="${new Date().toISOString().slice(0, 10)}" /></div>
+        <div class="form-group full"><label>Tiers (raison sociale / nom) *</label><input name="tiers" type="text" required /></div>
+        <div class="form-group"><label>Type d'identifiant fiscal</label>
+          <select name="tiers_identifiant_type">
+            <option value="matricule">Matricule fiscal</option>
+            <option value="cin">CIN</option>
+            <option value="passeport">Passeport</option>
+            <option value="cartesejour">Carte de séjour</option>
+          </select>
+        </div>
+        <div class="form-group"><label>Numéro d'identifiant</label><input name="tiers_identifiant" type="text" placeholder="Ex : 1234567A" /></div>
+        ${type === "achat" ? `<div class="form-group full"><label>Nature de l'opération (retenue à la source)</label>
+          <select name="nature_operation" onchange="BalanceEntrep.facturePreview()">
+            <option value="acquisition">Acquisition de biens/services (≥ 1 000 TND TTC)</option>
+            <option value="honoraires_reel">Honoraires — régime réel (3 %)</option>
+            <option value="honoraires_forfait">Honoraires forfait / commissions (10 %)</option>
+            <option value="loyer">Loyers (10 %)</option>
+            <option value="dividendes">Dividendes (10 %)</option>
+            <option value="cession">Cession de valeurs mobilières / immeubles (2,5-15 %)</option>
+            <option value="non_resident">Non-résidents (5-25 %)</option>
+          </select>
+        </div>` : ""}
+        <div class="form-group"><label>Montant HT (TND) *</label><input name="montant_ht" type="number" step="0.001" min="0.001" required oninput="BalanceEntrep.facturePreview()" /></div>
+        <div class="form-group"><label>Taux de TVA</label>
+          <select name="taux_tva" onchange="BalanceEntrep.facturePreview()">
+            <option value="19">19 %</option>
+            <option value="13">13 %</option>
+            <option value="7">7 %</option>
+            <option value="0">0 % (exonérée)</option>
+          </select>
+        </div>
+        <div class="form-group full"><div id="facture-preview" class="muted-sm"></div></div>
+        <div class="form-group full" style="display:flex;gap:8px">
+          <button class="btn" type="submit">Enregistrer (brouillon)</button>
+          <button class="btn btn-outline" type="button" onclick="BalanceEntrep.factureFormCancel()">Annuler</button>
+        </div>
+      </form>
+    </div>`;
+    slot.querySelector("#facture-form-f").addEventListener("submit", (e) => {
+      e.preventDefault();
+      factureSave();
+    });
+    facturePreview();
+  }
+
+  function factureFormCancel() {
+    const slot = document.getElementById("facture-form");
+    if (slot) slot.innerHTML = "";
+  }
+
+  function facturePreview() {
+    const el = document.getElementById("facture-preview");
+    const form = document.getElementById("facture-form-f");
+    if (!el || !form) return;
+    const ht = parseFloat(form.montant_ht.value) || 0;
+    const tva = (ht * (parseFloat(form.taux_tva.value) || 0)) / 100;
+    const ttc = ht + tva;
+    const timbre = ttc >= SEUIL_JS ? TIMBRE_JS : 0;
+    let rs = 0;
+    let taux = 0;
+    if (form.type_facture.value === "achat") {
+      taux = TAUX_RS_JS[form.nature_operation.value] || 0;
+      if (form.nature_operation.value === "acquisition" && ttc < SEUIL_JS) taux = 0;
+      if (taux > 0) rs = ((ttc - timbre) * taux) / 100;
+    }
+    const net = ttc - rs;
+    el.innerHTML = `Aperçu : HT <strong>${ht.toFixed(3)}</strong> + TVA <strong>${tva.toFixed(3)}</strong> = TTC <strong>${ttc.toFixed(3)}</strong> · Timbre <strong>${timbre.toFixed(3)}</strong>${form.type_facture.value === "achat" ? ` · Retenue <strong>${rs.toFixed(3)}</strong> (${taux} %)` : ""} · Net <strong>${net.toFixed(3)}</strong>`;
+  }
+
+  async function factureSave() {
+    const form = document.getElementById("facture-form-f");
+    if (!form) return;
+    const payload = {
+      action: "facture_create",
+      type_facture: form.type_facture.value,
+      numero: form.numero.value.trim(),
+      date: form.date.value,
+      tiers: form.tiers.value.trim(),
+      tiers_identifiant_type: form.tiers_identifiant_type.value,
+      tiers_identifiant: form.tiers_identifiant.value.trim(),
+      montant_ht: form.montant_ht.value,
+      taux_tva: form.taux_tva.value,
+    };
+    if (form.type_facture.value === "achat") payload.nature_operation = form.nature_operation.value;
+    try {
+      await api("/api/client/factures", { method: "POST", body: JSON.stringify(payload) });
+      factureFormCancel();
+      await loadFactures();
+    } catch (e) {
+      showAlert("dashboard-alert", "error", e.message);
+    }
+  }
+
+  async function factureStatut(id, statut) {
+    try {
+      await api("/api/client/factures", { method: "POST", body: JSON.stringify({ action: "facture_statut", id, statut }) });
+      tejData = null;
+      await loadFactures();
+    } catch (e) {
+      showAlert("dashboard-alert", "error", e.message);
+      await loadFactures();
+    }
+  }
+
+  async function factureDelete(id) {
+    if (!confirm("Supprimer cette facture (et son écriture si générée) ?")) return;
+    try {
+      await api("/api/client/factures", { method: "POST", body: JSON.stringify({ action: "facture_delete", id }) });
+      await loadFactures();
+    } catch (e) {
+      showAlert("dashboard-alert", "error", e.message);
+    }
+  }
+
+  // ---------------- TEJ : retenue à la source ----------------
+
+  async function apiNoThrow(path, options = {}) {
+    const res = await fetch(API_BASE + path, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...(token() ? { Authorization: `Bearer ${token()}` } : {}),
+        ...(options.headers || {}),
+      },
+    });
+    const data = await res.json().catch(() => ({}));
+    return { status: res.status, data };
+  }
+
+  async function loadTej() {
+    const wrap = document.getElementById("tej-content");
+    wrap.innerHTML = `
+      <div class="card" style="margin-bottom:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+          <div>
+            <h3 style="margin:0">TEJ — Retenue à la source (tej.finances.gov.tn)</h3>
+            <p class="muted-sm" style="margin:6px 0 12px">Export mensuel <strong>CCT-RS-V2</strong> des certificats de retenue à la source opérés sur vos factures d'achat <strong>validées</strong>. Base de calcul : (TTC − timbre) × taux, jamais le HT. Seuil : 1 000 TND TTC par opération (acquisitions). Déclaration avant le <strong>28 du mois suivant</strong>.</p>
+          </div>
+          <button class="btn btn-sm btn-outline" onclick="BalanceEntrep.loadTej()">⟳ Recharger</button>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <label style="font-weight:600">Mois de déclaration</label>
+          <input type="month" id="tej-mois" value="${new Date().toISOString().slice(0, 7)}" style="padding:6px" />
+          <button class="btn btn-sm" onclick="BalanceEntrep.tejCheck()">Vérifier la conformité</button>
+          <button class="btn btn-sm btn-outline" onclick="BalanceEntrep.tejExport()">⬇ Exporter le XML TEJ</button>
+        </div>
+      </div>
+      <div id="tej-result"><p class="muted-sm">Sélectionnez un mois puis vérifiez la conformité des factures avant export.</p></div>`;
+  }
+
+  async function tejCheck() {
+    const mois = document.getElementById("tej-mois").value;
+    const result = document.getElementById("tej-result");
+    if (!mois) return;
+    result.innerHTML = `<p>Vérification…</p>`;
+    const { status, data } = await apiNoThrow(`/api/client/tej?mois=${mois}`);
+    tejData = status === 200 ? data : null;
+    renderTej(status, data);
+  }
+
+  function renderTej(status, data) {
+    const result = document.getElementById("tej-result");
+    if (!result) return;
+    if (status === 400 && data && data.controles) {
+      const points = (data.controles || []).flatMap((c) => (c.points || []).map((p) => ({ ...p, numero: c.numero, tiers: c.tiers })));
+      const erreurs = points.filter((p) => p.niveau === "erreur");
+      const avertis = points.filter((p) => p.niveau === "avertissement");
+      result.innerHTML = `
+        <div class="alert show ${erreurs.length ? "alert-error" : "alert-success"}">
+          ${erreurs.length ? `${erreurs.length} erreur(s) bloquante(s)` : "Aucune erreur bloquante"} · ${avertis.length} avertissement(s).
+        </div>
+        ${points.length ? `<div class="card"><strong>Contrôles de conformité</strong><ul style="margin:8px 0 0;padding-left:18px">${points.map((p) => `<li style="color:${p.niveau === "erreur" ? "#991b1b" : "#92400e"}">${p.niveau === "erreur" ? "✗" : "⚠"} ${escapeHtml(p.numero)} — ${escapeHtml(p.tiers)} : ${escapeHtml(p.message)}</li>`).join("")}</ul></div>` : ""}`;
+      return;
+    }
+    if (status !== 200) {
+      result.innerHTML = `<div class="alert show alert-error">${escapeHtml((data && data.error) || "Erreur")}</div>`;
+      return;
+    }
+    const t = data.totaux || {};
+    const certs = data.certificats || [];
+    const erreurs = (data.controles || []).flatMap((c) => (c.points || []).filter((p) => p.niveau === "erreur"));
+    result.innerHTML = `
+      <div class="alert show alert-success" style="margin-bottom:12px">Déclaration conforme TEJ (CCT-RS-V2) — ${String(data.mois).padStart(2, "0")}/${data.annee} · Déclarant : ${escapeHtml(data.declarant)}.</div>
+      ${erreurs.length ? `<div class="alert show alert-error">${erreurs.length} erreur(s) bloquante(s) signalée(s).</div>` : ""}
+      <div class="card" style="margin-bottom:12px">
+        <strong>Totaux de la déclaration</strong>
+        <table class="admin-table" style="margin-top:8px">
+          <tbody>
+            <tr><td>Certificats</td><td><strong>${t.nb_certificats}</strong></td><td>Opérations</td><td><strong>${t.nb_operations}</strong></td></tr>
+            <tr><td>Total TTC</td><td><strong>${t.total_ttc}</strong> TND</td><td>Total retenue</td><td><strong>${t.total_retenue}</strong> TND</td></tr>
+            <tr><td>Total timbre</td><td>${t.total_timbre} TND</td><td>Total net servi</td><td>${t.total_net} TND</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card">
+        <strong>Certificats par bénéficiaire</strong>
+        ${certs.map((c) => `
+          <div style="margin:10px 0;border-top:1px solid #e2e8f0;padding-top:8px">
+            <p style="margin:0"><strong>${escapeHtml(c.tiers)}</strong> — ${escapeHtml(c.identifiant_type)} : ${escapeHtml(c.identifiant)} (${c.operations.length} opération(s))</p>
+            <table class="admin-table" style="margin-top:6px"><thead><tr><th>N°</th><th>Date paiement</th><th>HT</th><th>TTC</th><th>Retenue</th><th>Net servi</th></tr></thead><tbody>
+              ${(c.operations || []).map((o) => `<tr><td>${escapeHtml(o.numero)}</td><td>${o.date}</td><td>${o.montant_ht}</td><td>${o.montant_ttc}</td><td><strong>${o.montant_rs}</strong></td><td>${o.montant_net_servi}</td></tr>`).join("")}
+            </tbody></table>
+            <p class="muted-sm" style="margin:4px 0 0">Référence certificat : ${escapeHtml((c.operations[0] || {}).ref)}</p>
+          </div>`).join("") || '<p class="muted-sm">Aucun certificat.</p>'}
+      </div>`;
+  }
+
+  async function tejExport() {
+    const mois = document.getElementById("tej-mois").value;
+    if (!mois) return;
+    let data = tejData;
+    const monthNum = parseInt(mois.slice(5), 10);
+    if (!data || data.mois !== monthNum) {
+      const { status, data: d } = await apiNoThrow(`/api/client/tej?mois=${mois}`);
+      if (status !== 200) {
+        showAlert("dashboard-alert", "error", d.error || "Export impossible");
+        renderTej(status, d);
+        return;
+      }
+      data = d;
+    }
+    const blob = new Blob([data.xml], { type: "application/xml;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `TEJ_RS_${mois}_${(data.declarant || "entreprise").replace(/[^a-zA-Z0-9]+/g, "_").slice(0, 30)}.xml`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
   // ---------------- Dossiers & suivi (rappel) ----------------
 
   async function loadDossiers() {
@@ -770,6 +1077,15 @@ const BalanceEntrep = (() => {
     comptaVoirEcriture,
     comptaCloseEcriture,
     comptaDeleteEcriture,
+    loadFactures,
+    factureForm,
+    factureFormCancel,
+    facturePreview,
+    factureStatut,
+    factureDelete,
+    loadTej,
+    tejCheck,
+    tejExport,
     showPrefacture,
     closePrefacture,
     printPrefacture,

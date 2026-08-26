@@ -10,6 +10,7 @@ from django.db.models.deletion import ProtectedError
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
+from django.utils import timezone
 
 from .models import (
     Appointment,
@@ -25,6 +26,7 @@ from .models import (
     DossierTask,
     EcritureComptable,
     Entreprise,
+    Facture,
     LigneEcriture,
     Message,
     Payment,
@@ -41,6 +43,7 @@ from .security.audit import log_security
 from .security.rbac import require_level, role_level_for_request
 from .security.tokens import admin_token_ok, bearer_token, client_from_request, new_staff_token
 from .services import comptabilite
+from .services import facturation
 
 OPENING_HOURS = range(9, 17)
 
@@ -72,10 +75,19 @@ def _attachment_payload(att, request=None):
 
 def sitemap(request):
     base = settings.SITE_URL
-    pages = ["", "services/", "devis/", "contact/", "rendezvous/", "espace-client/", "espace-entreprise/"]
+    today = timezone.now().date().isoformat()
+    pages = [
+        ("", "weekly", "1.0"),
+        ("services/", "weekly", "0.9"),
+        ("devis/", "monthly", "0.8"),
+        ("rendezvous/", "monthly", "0.7"),
+        ("contact/", "monthly", "0.6"),
+        ("espace-client/", "monthly", "0.5"),
+        ("espace-entreprise/", "monthly", "0.6"),
+    ]
     urls = "\n".join(
-        f'<url><loc>{base}{p}</loc><changefreq>monthly</changefreq><priority>{"1.0" if not p else "0.8"}</priority></url>'
-        for p in pages
+        f'<url><loc>{base}{p}</loc><lastmod>{today}</lastmod><changefreq>{freq}</changefreq><priority>{prio}</priority></url>'
+        for p, freq, prio in pages
     )
     xml = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -91,6 +103,7 @@ def robots(request):
         "Allow: /",
         "Disallow: /api/",
         "Disallow: /admin/",
+        "Disallow: /gestion/",
         "",
         f"Sitemap: {settings.SITE_URL}sitemap.xml",
     ]
@@ -729,6 +742,208 @@ def api_client_comptabilite(request):
     return _json({"ok": False, "error": "Méthode non autorisée"}, 405)
 
 
+def _facture_payload(f):
+    return {
+        "id": f.id,
+        "type_facture": f.type_facture,
+        "type_label": f.get_type_facture_display(),
+        "numero": f.numero,
+        "date": f.date.strftime("%d/%m/%Y"),
+        "tiers": f.tiers,
+        "tiers_identifiant_type": f.tiers_identifiant_type,
+        "tiers_identifiant": f.tiers_identifiant,
+        "nature_operation": f.nature_operation,
+        "nature_label": f.get_nature_operation_display(),
+        "montant_ht": str(f.montant_ht),
+        "taux_tva": str(f.taux_tva),
+        "montant_tva": str(f.montant_tva),
+        "montant_ttc": str(f.montant_ttc),
+        "timbre_fiscal": str(f.timbre_fiscal),
+        "retenue_source_taux": str(f.retenue_source_taux),
+        "retenue_source_montant": str(f.retenue_source_montant),
+        "net_a_payer": str(f.net_a_payer),
+        "statut": f.statut,
+        "ecriture_id": f.ecriture_id,
+    }
+
+
+@csrf_exempt
+def api_client_factures(request):
+    """Espace entreprise (tenant) : facturation vente/achat avec TVA, timbre et retenue à la source."""
+    client = _client_from_request(request)
+    if not client:
+        return _json({"ok": False, "error": "Non autorisé"}, 401)
+    if not hasattr(client, "entreprise"):
+        return _json({"ok": False, "error": "Aucune entreprise (tenant) n'est associée à votre compte."}, 404)
+    entreprise = client.entreprise
+
+    if request.method == "GET":
+        return _json({
+            "ok": True,
+            "factures": [_facture_payload(f) for f in Facture.objects.filter(entreprise=entreprise)],
+        })
+
+    if request.method == "POST":
+        body = _read_body(request)
+        action = body.get("action")
+
+        if action == "facture_create":
+            type_facture = body.get("type_facture", "vente")
+            if type_facture not in {t for t, _ in Facture.TYPE_CHOICES}:
+                return _json({"ok": False, "error": "Type de facture invalide."}, 400)
+            numero = (body.get("numero") or "").strip()
+            tiers = (body.get("tiers") or "").strip()
+            if not numero or not tiers:
+                return _json({"ok": False, "error": "N° facture et tiers requis."}, 400)
+            try:
+                date_f = date.fromisoformat((body.get("date") or "").strip())
+            except ValueError:
+                return _json({"ok": False, "error": "Date invalide (AAAA-MM-JJ)."}, 400)
+            try:
+                montant_ht = Decimal(str(body.get("montant_ht") or 0))
+            except Exception:
+                return _json({"ok": False, "error": "Montant HT invalide."}, 400)
+            if montant_ht <= 0:
+                return _json({"ok": False, "error": "Le montant HT doit être positif."}, 400)
+            taux_tva = body.get("taux_tva", 19)
+            try:
+                taux_tva = Decimal(str(taux_tva))
+            except Exception:
+                return _json({"ok": False, "error": "Taux de TVA invalide."}, 400)
+            if taux_tva not in (Decimal("0"), Decimal("7"), Decimal("13"), Decimal("19")):
+                return _json({"ok": False, "error": "Taux de TVA invalide (0, 7, 13 ou 19)."}, 400)
+            identifiant_type = body.get("tiers_identifiant_type", "matricule")
+            if identifiant_type not in {i for i, _ in Facture.IDENTIFIANT_CHOICES}:
+                return _json({"ok": False, "error": "Type d'identifiant invalide."}, 400)
+            nature = body.get("nature_operation", "acquisition")
+            if nature not in {n for n, _ in Facture.NATURE_CHOICES}:
+                return _json({"ok": False, "error": "Nature d'opération invalide."}, 400)
+            statut = body.get("statut", "brouillon")
+            if statut not in {s for s, _ in Facture.STATUT_CHOICES}:
+                return _json({"ok": False, "error": "Statut invalide."}, 400)
+            taux_rs = None
+            if (body.get("retenue_source_taux") or "") != "":
+                try:
+                    taux_rs = Decimal(str(body.get("retenue_source_taux")))
+                except Exception:
+                    return _json({"ok": False, "error": "Taux de retenue invalide."}, 400)
+                if not (0 <= taux_rs <= 100):
+                    return _json({"ok": False, "error": "Taux de retenue hors bornes (0-100)."}, 400)
+            montants = facturation.calculer_montants(montant_ht, taux_tva, nature, type_facture, taux_rs)
+            obj = Facture.objects.create(
+                entreprise=entreprise, type_facture=type_facture, numero=numero, date=date_f,
+                tiers=tiers, tiers_identifiant_type=identifiant_type,
+                tiers_identifiant=(body.get("tiers_identifiant") or "").strip(),
+                nature_operation=nature, statut=statut,
+                montant_ht=montants["montant_ht"], taux_tva=montants["taux_tva"],
+                montant_tva=montants["montant_tva"], montant_ttc=montants["montant_ttc"],
+                timbre_fiscal=montants["timbre_fiscal"],
+                retenue_source_taux=montants["retenue_source_taux"],
+                retenue_source_montant=montants["retenue_source_montant"],
+                net_a_payer=montants["net_a_payer"],
+            )
+            ecr, err = facturation.sync_ecriture(obj)
+            if err:
+                return _json({"ok": False, "error": f"Écriture comptable : {err}"}, 400)
+            return _json({"ok": True, "id": obj.id, "ecriture_id": obj.ecriture_id})
+
+        if action == "facture_update":
+            try:
+                obj = Facture.objects.get(pk=int(body.get("id", 0)), entreprise=entreprise)
+            except (ValueError, Facture.DoesNotExist):
+                return _json({"ok": False, "error": "Facture introuvable."}, 404)
+            if obj.statut == "valide":
+                return _json({"ok": False, "error": "Une facture validée ne peut plus être modifiée."}, 400)
+            field = body.get("field")
+            value = body.get("value")
+            if field == "numero":
+                value = str(value).strip()
+                if not value:
+                    return _json({"ok": False, "error": "N° facture requis."}, 400)
+            elif field == "tiers":
+                value = str(value).strip()
+                if not value:
+                    return _json({"ok": False, "error": "Tiers requis."}, 400)
+            elif field == "tiers_identifiant":
+                value = str(value).strip()
+            elif field in ("nature_operation", "tiers_identifiant_type"):
+                valid = [c for c, _ in Facture.NATURE_CHOICES] if field == "nature_operation" else [c for c, _ in Facture.IDENTIFIANT_CHOICES]
+                if value not in valid:
+                    return _json({"ok": False, "error": "Valeur invalide."}, 400)
+            else:
+                return _json({"ok": False, "error": "Champ non modifiable ici."}, 400)
+            setattr(obj, field, value)
+            obj.save(update_fields=[field])
+            return _json({"ok": True, "message": "Facture mise à jour."})
+
+        if action == "facture_statut":
+            try:
+                obj = Facture.objects.get(pk=int(body.get("id", 0)), entreprise=entreprise)
+            except (ValueError, Facture.DoesNotExist):
+                return _json({"ok": False, "error": "Facture introuvable."}, 404)
+            statut = body.get("statut")
+            if statut not in {s for s, _ in Facture.STATUT_CHOICES}:
+                return _json({"ok": False, "error": "Statut invalide."}, 400)
+            if statut == obj.statut:
+                return _json({"ok": True, "message": "Statut inchangé."})
+            if obj.ecriture_id and obj.ecriture.statut == "valide":
+                return _json({"ok": False, "error": "L'écriture comptable est déjà validée : passez-la en brouillon avant de modifier la facture."}, 400)
+            obj.statut = statut
+            obj.save(update_fields=["statut"])
+            ecr, err = facturation.sync_ecriture(obj)
+            if err:
+                return _json({"ok": False, "error": f"Écriture comptable : {err}"}, 400)
+            return _json({"ok": True, "message": "Statut mis à jour.", "ecriture_id": obj.ecriture_id})
+
+        if action == "facture_delete":
+            try:
+                obj = Facture.objects.get(pk=int(body.get("id", 0)), entreprise=entreprise)
+            except (ValueError, Facture.DoesNotExist):
+                return _json({"ok": False, "error": "Facture introuvable."}, 404)
+            ecr, err = facturation.sync_ecriture(obj)
+            if err:
+                return _json({"ok": False, "error": err}, 400)
+            obj.delete()
+            return _json({"ok": True, "message": "Facture supprimée."})
+
+        return _json({"ok": False, "error": "Action inconnue"}, 400)
+
+    return _json({"ok": False, "error": "Méthode non autorisée"}, 405)
+
+
+@csrf_exempt
+def api_client_tej(request):
+    """Espace entreprise : conformité TEJ + export XML CCT-RS-V2 de la retenue à la source."""
+    client = _client_from_request(request)
+    if not client:
+        return _json({"ok": False, "error": "Non autorisé"}, 401)
+    if not hasattr(client, "entreprise"):
+        return _json({"ok": False, "error": "Aucune entreprise (tenant) n'est associée à votre compte."}, 404)
+    entreprise = client.entreprise
+    if request.method != "GET":
+        return _json({"ok": False, "error": "Méthode non autorisée"}, 405)
+    mois_raw = (request.GET.get("mois") or "").strip()
+    if not mois_raw:
+        return _json({"ok": False, "error": "Paramètre mois requis (AAAA-MM)."}, 400)
+    try:
+        annee, mois = (int(x) for x in mois_raw.split("-"))
+    except Exception:
+        return _json({"ok": False, "error": "Paramètre mois invalide (AAAA-MM)."}, 400)
+    xml, certificats, totaux, controles, erreur = facturation.construire_declaration_tej(entreprise, annee, mois)
+    if erreur:
+        return _json({"ok": False, "error": erreur, "controles": controles, "totaux": totaux}, 400)
+    return _json({
+        "ok": True,
+        "declarant": entreprise.raison_sociale,
+        "annee": annee,
+        "mois": mois,
+        "certificats": certificats,
+        "totaux": totaux,
+        "controles": controles,
+        "xml": xml,
+    })
+
+
 @csrf_exempt
 def api_client_attachments(request, dossier_id):
     client = _client_from_request(request)
@@ -870,6 +1085,7 @@ ACCESS_LEVELS = {
     "payments": (60, 80),
     "collaborateurs": (80, 100),
     "entreprises": (40, 60),
+    "factures": (40, 60),
     "comptes": (60, 60),
     "ecritures": (60, 60),
 }
@@ -900,6 +1116,7 @@ TABLES = {
     "entreprises": (Entreprise, ["id", "client_id", "client_name", "raison_sociale", "matricule_fiscale", "registre_commerce", "forme_juridique", "activite", "adresse", "code_postal", "ville", "telephone", "email", "representant_legal", "notes", "updated_at"], None),
     "comptes": (CompteComptable, ["id", "entreprise_name", "classe", "niveau", "parent_id", "parent_label", "numero", "intitule", "active"], None),
     "ecritures": (EcritureComptable, ["id", "entreprise_name", "journal", "numero_piece", "date", "libelle", "statut", "total_debit", "total_credit", "equilibree", "nb_lignes"], None),
+    "factures": (Facture, ["id", "entreprise_name", "type_facture", "numero", "date", "tiers", "nature_operation", "montant_ht", "taux_tva", "montant_ttc", "timbre_fiscal", "retenue_source_taux", "retenue_source_montant", "net_a_payer", "statut", "ecriture_id"], None),
 }
 
 
@@ -973,6 +1190,10 @@ def api_admin(request, table):
                     {"id": l.id, "compte_id": l.compte_id, "numero": l.compte.numero, "intitule": l.compte.intitule, "libelle": l.libelle, "debit": str(l.debit), "credit": str(l.credit)}
                     for l in obj.lignes.select_related("compte").all()
                 ]
+            if table == "factures":
+                item["entreprise_name"] = obj.entreprise.raison_sociale
+                item["type_label"] = obj.get_type_facture_display()
+                item["nature_label"] = obj.get_nature_operation_display()
             if extra:
                 item[extra] = getattr(obj, extra, "—")
             if table == "dossier_attachments":
@@ -1103,12 +1324,18 @@ def api_admin(request, table):
                 except ValueError:
                     return _json({"ok": False, "error": "Date invalide (AAAA-MM-JJ)."}, 400)
             value = str(value)
+        elif table == "factures" and field == "statut":
+            value = str(value)
+            if value not in {s for s, _ in Facture.STATUT_CHOICES}:
+                return _json({"ok": False, "error": "Statut invalide."}, 400)
         else:
             return _json({"ok": False, "error": "Champ non modifiable"}, 400)
         if not hasattr(obj, field):
             return _json({"ok": False, "error": "Champ invalide"}, 400)
         setattr(obj, field, value)
         obj.save(update_fields=[field])
+        if table == "factures" and field == "statut":
+            facturation.sync_ecriture(obj)
         return _json({"ok": True})
 
     if request.method == "DELETE":
@@ -1125,7 +1352,9 @@ def api_admin(request, table):
             except ProtectedError:
                 return _json({"ok": False, "error": "Ce service est utilisé par des dossiers clients : suppression impossible."}, 400)
             return _json({"ok": True, "message": "Service supprimé."})
-        if table in ("client_messages", "client_service_suivis", "dossier_tasks", "service_followups", "prefactures", "dossier_attachments", "declarations", "payments", "devis_requests", "appointments", "messages", "collaborateurs", "entreprises", "clients", "comptes", "ecritures"):
+        if table in ("client_messages", "client_service_suivis", "dossier_tasks", "service_followups", "prefactures", "dossier_attachments", "declarations", "payments", "devis_requests", "appointments", "messages", "collaborateurs", "entreprises", "clients", "comptes", "ecritures", "factures"):
+            if table == "factures":
+                facturation.sync_ecriture(obj)
             try:
                 obj.delete()
             except ProtectedError:
@@ -2209,6 +2438,61 @@ def _api_admin_create(request, table):
             notes=(body.get("notes") or "").strip(),
         )
         comptabilite.plan_init(obj)
+        return _json({"ok": True, "id": obj.id})
+
+    if table == "factures":
+        try:
+            entreprise = Entreprise.objects.get(pk=int(body.get("entreprise", 0)))
+        except (ValueError, Entreprise.DoesNotExist):
+            return _json({"ok": False, "error": "Entreprise introuvable."}, 400)
+        type_facture = body.get("type_facture", "vente")
+        if type_facture not in {t for t, _ in Facture.TYPE_CHOICES}:
+            return _json({"ok": False, "error": "Type de facture invalide."}, 400)
+        numero = (body.get("numero") or "").strip()
+        tiers = (body.get("tiers") or "").strip()
+        if not numero or not tiers:
+            return _json({"ok": False, "error": "N° facture et tiers requis."}, 400)
+        try:
+            date_f = date.fromisoformat((body.get("date") or "").strip())
+        except ValueError:
+            return _json({"ok": False, "error": "Date invalide (AAAA-MM-JJ)."}, 400)
+        try:
+            montant_ht = Decimal(str(body.get("montant_ht") or 0))
+        except Exception:
+            return _json({"ok": False, "error": "Montant HT invalide."}, 400)
+        if montant_ht <= 0:
+            return _json({"ok": False, "error": "Le montant HT doit être positif."}, 400)
+        try:
+            taux_tva = Decimal(str(body.get("taux_tva", 19)))
+        except Exception:
+            return _json({"ok": False, "error": "Taux de TVA invalide."}, 400)
+        if taux_tva not in (Decimal("0"), Decimal("7"), Decimal("13"), Decimal("19")):
+            return _json({"ok": False, "error": "Taux de TVA invalide (0, 7, 13 ou 19)."}, 400)
+        identifiant_type = body.get("tiers_identifiant_type", "matricule")
+        if identifiant_type not in {i for i, _ in Facture.IDENTIFIANT_CHOICES}:
+            return _json({"ok": False, "error": "Type d'identifiant invalide."}, 400)
+        nature = body.get("nature_operation", "acquisition")
+        if nature not in {n for n, _ in Facture.NATURE_CHOICES}:
+            return _json({"ok": False, "error": "Nature d'opération invalide."}, 400)
+        statut = body.get("statut", "brouillon")
+        if statut not in {s for s, _ in Facture.STATUT_CHOICES}:
+            return _json({"ok": False, "error": "Statut invalide."}, 400)
+        montants = facturation.calculer_montants(montant_ht, taux_tva, nature, type_facture)
+        obj = Facture.objects.create(
+            entreprise=entreprise, type_facture=type_facture, numero=numero, date=date_f,
+            tiers=tiers, tiers_identifiant_type=identifiant_type,
+            tiers_identifiant=(body.get("tiers_identifiant") or "").strip(),
+            nature_operation=nature, statut=statut,
+            montant_ht=montants["montant_ht"], taux_tva=montants["taux_tva"],
+            montant_tva=montants["montant_tva"], montant_ttc=montants["montant_ttc"],
+            timbre_fiscal=montants["timbre_fiscal"],
+            retenue_source_taux=montants["retenue_source_taux"],
+            retenue_source_montant=montants["retenue_source_montant"],
+            net_a_payer=montants["net_a_payer"],
+        )
+        ecr, err = facturation.sync_ecriture(obj)
+        if err:
+            return _json({"ok": False, "error": f"Écriture comptable : {err}"}, 400)
         return _json({"ok": True, "id": obj.id})
 
     if table == "comptes":

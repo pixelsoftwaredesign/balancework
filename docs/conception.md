@@ -164,6 +164,39 @@ Rôles (niveaux) :
   entreprise, pièce équilibrée→bilan, pièce déséquilibrée refusée, comptes protégés,
   non-intrusion entre entreprises).
 
+### 4.2 Facturation tenant
+
+- Modèle `Facture` (`core/models.py`) : vente/achat, n° et date, tiers + identifiant
+  fiscal (matricule/CIN/passeport/carte de séjour), nature d'opération, HT/TVA/TTC,
+  droit de timbre, retenue à la source, net à payer, statut (brouillon/validée/annulée).
+- Service `core/services/facturation.py` :
+  - `calculer_montants` : TVA, TTC, **droit de timbre 1 DT si TTC ≥ 1 000 DT** (LF 2022),
+    **retenue = (TTC − timbre) × taux** (jamais le HT), net = TTC − retenue ; seuil de
+    1 000 DT TTC pour les acquisitions (Art. 52 Code IRPP/IS).
+  - `sync_ecriture` / `creer_ecriture` : la validation d'une facture génère
+    **automatiquement une écriture comptable équilibrée** :
+    - vente → 431 (clients, TTC) / 707 (HT) / 443 (TVA collectée) ;
+    - achat → compte de charge (607/637/633/65 selon nature) / 401 (fournisseurs, net)
+      / 442 (TVA déductible) / 445 (retenues à la source).
+  - Annulation d'une facture ⇒ suppression de l'écriture ; une facture dont l'écriture
+    est validée ne peut être modifiée/annulée sans repasser l'écriture en brouillon.
+- API `POST/GET /api/client/factures` (tenant) + table admin `factures` (RBAC 40/60).
+
+### 4.3 Conformité & export TEJ (retenue à la source)
+
+- **TEJ** = plateforme `tej.finances.gov.tn` (Art. 41 LF 2022) : déclaration mensuelle
+  des retenues à la source avant le **28 du mois suivant**, fichier XML **CCT-RS-V2`.
+- `facturation.construire_declaration_tej` : regroupe les factures d'achat **validées
+  avec retenue** du mois par bénéficiaire → un `<Certificat>` par tiers, avec
+  `<IdTaxpayer>` (exactement un identifiant : MatriculeFiscal/CIN/Passeport/CarteSejour),
+  `Ref_certif_chez_declarant` unique, et des opérations dont les montants sont en
+  **millimes entiers** ; `MontantNetServi = MontantTTC − MontantRS`.
+- `facturation.controles_conformite` (bloquants avant export) : tiers/identifiant requis,
+  format du matricule (`\d{7}[A-Z]`), références uniques, cohérence net = TTC − retenue.
+- API `GET /api/client/tej?mois=AAAA-MM` : renvoie controles + certificats + totaux +
+  le XML ; refuse (400) tant qu'une facture est non conforme. L'onglet TEJ de l'espace
+  entreprise permet de vérifier puis de **télécharger le XML** (`Blob`).
+
 ---
 
 ## 5. Refactor en 3 couches — état
@@ -177,6 +210,7 @@ Rôles (niveaux) :
 | `core/security/throttle.py` | Application | limitation des tentatives |
 | `core/security/audit.py` | Application | journal de sécurité + IP client |
 | `core/services/comptabilite.py` | Application | plan, grand-livre, bilan, résultat |
+| `core/services/facturation.py` | Application | TVA, timbre, retenue, écritures auto, XML TEJ |
 | `core/models.py` | Persistance | modèles + contraintes |
 | `core/plan_comptable.py` | Persistance | seed du plan comptable |
 

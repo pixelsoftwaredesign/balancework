@@ -18,6 +18,7 @@ from .models import (
     DossierTask,
     EcritureComptable,
     Entreprise,
+    Facture,
     LigneEcriture,
     Message,
     Payment,
@@ -875,4 +876,156 @@ class EspaceEntrepriseComptabiliteTests(TestCase):
         res = self.client.delete("/api/client/comptabilite", data=json.dumps({
             "kind": "ecriture", "id": 999999,
         }), content_type="application/json", **self.h)
+        self.assertEqual(res.status_code, 404)
+
+
+class FacturationTejTests(TestCase):
+    """Facturation tenant + conformité TEJ (retenue à la source, CCT-RS-V2)."""
+
+    def setUp(self):
+        self.client_model = Client.objects.create(
+            name="Tenant", email="fac@espace.tn", phone="1",
+            user=User.objects.create_user(username="fac@espace.tn", email="fac@espace.tn", password="mdp12345678"),
+        )
+        self.entreprise = Entreprise.objects.create(client=self.client_model, raison_sociale="Facturation SARL")
+        seed_plan_comptable(self.entreprise)
+        token = new_client_token(self.client_model.user)
+        self.h = {"HTTP_AUTHORIZATION": f"Bearer {token.key}"}
+
+    def _facture(self, type_facture="achat", numero="FA-001", tiers="Prestataire Y",
+                 identifiant="9988776B", nature="honoraires_reel", ht="2000.000", tva="19"):
+        return self.client.post("/api/client/factures", data=json.dumps({
+            "action": "facture_create", "type_facture": type_facture, "numero": numero,
+            "date": "2026-08-05", "tiers": tiers,
+            "tiers_identifiant_type": "matricule", "tiers_identifiant": identifiant,
+            "nature_operation": nature, "montant_ht": ht, "taux_tva": tva,
+        }), content_type="application/json", **self.h)
+
+    def test_calculs_service_retenue_et_timbre(self):
+        from core.services import facturation
+        m = facturation.calculer_montants("2000.000", "19", "honoraires_reel", "achat")
+        self.assertEqual(str(m["montant_ttc"]), "2380.000")
+        self.assertEqual(str(m["timbre_fiscal"]), "1.000")
+        self.assertEqual(str(m["retenue_source_taux"]), "3.00")
+        self.assertEqual(str(m["retenue_source_montant"]), "71.370")
+        self.assertEqual(str(m["net_a_payer"]), "2308.630")
+        # acquisition sous le seuil de 1 000 TND → pas de retenue
+        m2 = facturation.calculer_montants("500.000", "19", "acquisition", "achat")
+        self.assertEqual(str(m2["retenue_source_montant"]), "0.000")
+        # vente : pas de retenue, mais droit de timbre si ≥ 1 000 TND TTC
+        m3 = facturation.calculer_montants("2000.000", "19", "acquisition", "vente")
+        self.assertEqual(str(m3["timbre_fiscal"]), "1.000")
+        self.assertEqual(str(m3["retenue_source_montant"]), "0.000")
+
+    def test_facture_achat_validee_genere_ecriture(self):
+        res = self._facture()
+        self.assertEqual(res.status_code, 200, res.json())
+        fid = res.json()["id"]
+        f = Facture.objects.get(pk=fid)
+        self.assertEqual(str(f.retenue_source_montant), "71.370")
+        res = self.client.post("/api/client/factures", data=json.dumps({
+            "action": "facture_statut", "id": fid, "statut": "valide",
+        }), content_type="application/json", **self.h)
+        self.assertEqual(res.status_code, 200, res.json())
+        f.refresh_from_db()
+        ecr = f.ecriture
+        self.assertIsNotNone(ecr)
+        self.assertTrue(ecr.est_equilibree)
+        self.assertEqual(ecr.journal, "achats")
+        lignes = {l.compte.numero: (l.debit, l.credit) for l in ecr.lignes.all()}
+        self.assertEqual(str(lignes["637"][0]), "2000.000")
+        self.assertEqual(str(lignes["445"][1]), "71.370")
+        self.assertEqual(str(lignes["401"][1]), "2308.630")
+        self.assertEqual(str(lignes["442"][0]), "380.000")
+
+    def test_facture_vente_ecriture(self):
+        res = self._facture(type_facture="vente", numero="FV-001", ht="1000.000")
+        self.assertEqual(res.status_code, 200, res.json())
+        fid = res.json()["id"]
+        self.client.post("/api/client/factures", data=json.dumps({
+            "action": "facture_statut", "id": fid, "statut": "valide",
+        }), content_type="application/json", **self.h)
+        f = Facture.objects.get(pk=fid)
+        lignes = {l.compte.numero: (l.debit, l.credit) for l in f.ecriture.lignes.all()}
+        self.assertEqual(str(lignes["431"][0]), "1190.000")
+        self.assertEqual(str(lignes["707"][1]), "1000.000")
+        self.assertEqual(str(lignes["443"][1]), "190.000")
+        self.assertTrue(f.ecriture.est_equilibree)
+
+    def test_facture_validee_non_modifiable_et_annulee_supprime_ecriture(self):
+        fid = self._facture().json()["id"]
+        self.client.post("/api/client/factures", data=json.dumps({
+            "action": "facture_statut", "id": fid, "statut": "valide",
+        }), content_type="application/json", **self.h)
+        # facture validée (écriture validée) : modification refusée
+        res = self.client.post("/api/client/factures", data=json.dumps({
+            "action": "facture_update", "id": fid, "field": "tiers", "value": "Autre",
+        }), content_type="application/json", **self.h)
+        self.assertEqual(res.status_code, 400)
+        # annulation directe refusée tant que l'écriture est validée
+        res = self.client.post("/api/client/factures", data=json.dumps({
+            "action": "facture_statut", "id": fid, "statut": "annulee",
+        }), content_type="application/json", **self.h)
+        self.assertEqual(res.status_code, 400)
+        # repasser l'écriture en brouillon, puis annuler la facture → écriture supprimée
+        f = Facture.objects.get(pk=fid)
+        ecr_id = f.ecriture_id
+        self.client.post("/api/client/comptabilite", data=json.dumps({
+            "action": "ecriture_statut", "id": ecr_id, "statut": "brouillon",
+        }), content_type="application/json", **self.h)
+        res = self.client.post("/api/client/factures", data=json.dumps({
+            "action": "facture_statut", "id": fid, "statut": "annulee",
+        }), content_type="application/json", **self.h)
+        self.assertEqual(res.status_code, 200, res.json())
+        f.refresh_from_db()
+        self.assertIsNone(f.ecriture_id)
+        self.assertFalse(EcritureComptable.objects.filter(pk=ecr_id).exists())
+
+    def test_export_tej_xml_conforme(self):
+        self._facture(numero="FA-001", tiers="Prestataire Y", identifiant="9988776B", ht="2000.000")
+        fid = Facture.objects.get(numero="FA-001").id
+        self.client.post("/api/client/factures", data=json.dumps({
+            "action": "facture_statut", "id": fid, "statut": "valide",
+        }), content_type="application/json", **self.h)
+        res = self.client.get("/api/client/tej?mois=2026-08", **self.h)
+        self.assertEqual(res.status_code, 200, res.json())
+        data = res.json()
+        self.assertEqual(data["totaux"]["nb_certificats"], 1)
+        self.assertEqual(data["totaux"]["total_retenue"], "71.370")
+        self.assertIn("<DeclarationsRS>", data["xml"])
+        self.assertIn("<MatriculeFiscal>9988776B</MatriculeFiscal>", data["xml"])
+        # montants en millimes entiers
+        self.assertIn("<MontantNetServi>2308630</MontantNetServi>", data["xml"])
+        self.assertIn(f"<Ref_certif_chez_declarant>RS-{fid:06d}</Ref_certif_chez_declarant>", data["xml"])
+        self.assertIn("<MoisDepot>08</MoisDepot>", data["xml"])
+
+    def test_export_tej_regroupe_par_beneficiaire_et_bloque_non_conforme(self):
+        self._facture(numero="FA-001", tiers="Prestataire Y", identifiant="9988776B", ht="2000.000")
+        self._facture(numero="FA-002", tiers="Prestataire Y", identifiant="9988776B", ht="1000.000")
+        for numero in ("FA-001", "FA-002"):
+            fid = Facture.objects.get(numero=numero).id
+            self.client.post("/api/client/factures", data=json.dumps({
+                "action": "facture_statut", "id": fid, "statut": "valide",
+            }), content_type="application/json", **self.h)
+        data = self.client.get("/api/client/tej?mois=2026-08", **self.h).json()
+        self.assertEqual(data["totaux"]["nb_certificats"], 1)
+        self.assertEqual(data["totaux"]["nb_operations"], 2)
+        # facture non conforme (identifiant manquant) → export bloqué
+        self._facture(numero="FA-003", tiers="Fournisseur Z", identifiant="", ht="500.000")
+        fid = Facture.objects.get(numero="FA-003").id
+        self.client.post("/api/client/factures", data=json.dumps({
+            "action": "facture_statut", "id": fid, "statut": "valide",
+        }), content_type="application/json", **self.h)
+        res = self.client.get("/api/client/tej?mois=2026-08", **self.h)
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("FA-003", res.json()["error"])
+        self.assertTrue(any(c["numero"] == "FA-003" for c in res.json()["controles"]))
+
+    def test_facture_sans_entreprise_404(self):
+        sans = Client.objects.create(
+            name="Sans", email="sans@espace.tn", phone="3",
+            user=User.objects.create_user(username="sans@espace.tn", email="sans@espace.tn", password="mdp12345678"),
+        )
+        t = new_client_token(sans.user)
+        res = self.client.get("/api/client/factures", **{"HTTP_AUTHORIZATION": f"Bearer {t.key}"})
         self.assertEqual(res.status_code, 404)

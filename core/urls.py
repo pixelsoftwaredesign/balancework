@@ -38,6 +38,8 @@ urlpatterns = [
     path("api/client/prefacture/<int:prefacture_id>", views.api_client_prefacture, name="api_client_prefacture"),
     path("api/client/messages", views.api_client_messages, name="api_client_messages"),
     path("api/client/comptabilite", views.api_client_comptabilite, name="api_client_comptabilite"),
+    path("api/client/factures", views.api_client_factures, name="api_client_factures"),
+    path("api/client/tej", views.api_client_tej, name="api_client_tej"),
 
     # API admin (jeton Bearer)
     path("api/admin/dashboard", views.api_admin_dashboard, name="api_admin_dashboard"),

@@ -222,9 +222,10 @@ async function initServiceSelects() {
   });
 }
 
-async function loadServices(targetId) {
+ async function loadServices(targetId) {
   const wrap = document.getElementById(targetId);
   if (!wrap) return;
+  if (wrap.querySelector(".card")) return; // contenu déjà pré-rendu (SEO)
   const res = await fetch(API_BASE + "/api/services");
   const data = await res.json();
   const icons = { scale: "scale", calculator: "calculator", shield: "shield", briefcase: "briefcase", file: "file", eye: "eye", users: "users", cart: "cart", trending: "trending", link: "link", "user-check": "user-check", rocket: "rocket", target: "target" };

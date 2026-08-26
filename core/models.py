@@ -833,3 +833,75 @@ class LigneEcriture(models.Model):
 
     def __str__(self):
         return f"{self.compte.numero} — {self.debit}/{self.credit}"
+
+
+class Facture(models.Model):
+    """Facturation tenant : vente/achat, TVA, droit de timbre et retenue à la source (TEJ)."""
+
+    TYPE_CHOICES = [
+        ("vente", "Facture de vente"),
+        ("achat", "Facture d'achat"),
+    ]
+    STATUT_CHOICES = [
+        ("brouillon", "Brouillon"),
+        ("valide", "Validée"),
+        ("annulee", "Annulée"),
+    ]
+    IDENTIFIANT_CHOICES = [
+        ("matricule", "Matricule fiscal"),
+        ("cin", "CIN"),
+        ("passeport", "Passeport"),
+        ("cartesejour", "Carte de séjour"),
+    ]
+    NATURE_CHOICES = [
+        ("acquisition", "Acquisition de biens/services (≥ 1 000 TND)"),
+        ("honoraires_reel", "Honoraires — régime réel (3 %)"),
+        ("honoraires_forfait", "Honoraires forfait / commissions (10 %)"),
+        ("loyer", "Loyers (10 %)"),
+        ("dividendes", "Dividendes (10 %)"),
+        ("cession", "Cession de valeurs mobilières / immeubles (2,5-15 %)"),
+        ("non_resident", "Non-résidents (5-25 %)"),
+    ]
+    TAUX_TVA_CHOICES = [
+        ("0", "0 % (exonérée)"),
+        ("7", "7 %"),
+        ("13", "13 %"),
+        ("19", "19 %"),
+    ]
+
+    entreprise = models.ForeignKey(
+        Entreprise, on_delete=models.CASCADE, related_name="factures", verbose_name="Entreprise (tenant)"
+    )
+    type_facture = models.CharField(max_length=10, choices=TYPE_CHOICES, default="vente", verbose_name="Type de facture")
+    numero = models.CharField(max_length=40, verbose_name="N° facture")
+    date = models.DateField(verbose_name="Date")
+    tiers = models.CharField(max_length=200, verbose_name="Raison sociale / Nom du tiers")
+    tiers_identifiant_type = models.CharField(
+        max_length=20, choices=IDENTIFIANT_CHOICES, default="matricule", verbose_name="Type d'identifiant fiscal"
+    )
+    tiers_identifiant = models.CharField(max_length=60, blank=True, verbose_name="Identifiant fiscal (MF/CIN…)")
+    nature_operation = models.CharField(
+        max_length=20, choices=NATURE_CHOICES, default="acquisition", verbose_name="Nature de l'opération (retenue à la source)"
+    )
+    montant_ht = models.DecimalField(max_digits=12, decimal_places=3, verbose_name="Montant HT (TND)")
+    taux_tva = models.DecimalField(max_digits=4, decimal_places=2, default=19, verbose_name="Taux de TVA (%)")
+    montant_tva = models.DecimalField(max_digits=12, decimal_places=3, default=0, verbose_name="Montant TVA (TND)")
+    montant_ttc = models.DecimalField(max_digits=12, decimal_places=3, default=0, verbose_name="Montant TTC (TND)")
+    timbre_fiscal = models.DecimalField(max_digits=12, decimal_places=3, default=0, verbose_name="Droit de timbre (TND)")
+    retenue_source_taux = models.DecimalField(max_digits=5, decimal_places=2, default=0, verbose_name="Taux de retenue à la source (%)")
+    retenue_source_montant = models.DecimalField(max_digits=12, decimal_places=3, default=0, verbose_name="Montant retenue à la source (TND)")
+    net_a_payer = models.DecimalField(max_digits=12, decimal_places=3, default=0, verbose_name="Net à payer (TTC − retenue)")
+    statut = models.CharField(max_length=20, choices=STATUT_CHOICES, default="brouillon", verbose_name="Statut")
+    ecriture = models.OneToOneField(
+        EcritureComptable, null=True, blank=True, on_delete=models.SET_NULL,
+        related_name="facture", verbose_name="Écriture comptable générée",
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="Créée le")
+
+    class Meta:
+        ordering = ["-date", "-id"]
+        verbose_name = "Facture (tenant)"
+        verbose_name_plural = "Facturation (tenants)"
+
+    def __str__(self):
+        return f"{self.get_type_facture_display()} {self.numero} — {self.tiers} ({self.date})"

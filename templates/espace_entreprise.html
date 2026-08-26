@@ -2,6 +2,8 @@
 {% load static %}
 {% block title %}Espace entreprise | {{ site_name }}{% endblock %}
 {% block description %}Connectez-vous à votre espace entreprise pour consulter votre plan comptable, vos écritures, votre grand livre et votre bilan, ainsi que l'avancement de vos dossiers.{% endblock %}
+{% block keywords %}Balance And Tax Safety, conseil fiscal Tunisie, espace entreprise, plan comptable, facturation, déclaration retenue à la source TEJ, déclaration CNSS, Gabès, El Hamma{% endblock %}
+{% block canonical %}espace-entreprise/{% endblock %}
 {% block content %}
 
 <section class="section">
@@ -81,10 +83,14 @@
 
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px">
         <button class="btn btn-sm" id="tab-compta" onclick="BalanceEntrep.showTab('compta')">Comptabilité</button>
+        <button class="btn btn-sm btn-outline" id="tab-factures" onclick="BalanceEntrep.showTab('factures')">Facturation</button>
+        <button class="btn btn-sm btn-outline" id="tab-tej" onclick="BalanceEntrep.showTab('tej')">TEJ · Retenue à la source</button>
         <button class="btn btn-sm btn-outline" id="tab-dossiers" onclick="BalanceEntrep.showTab('dossiers')">Dossiers &amp; suivi</button>
       </div>
 
       <div id="compta-content"><p>Chargement…</p></div>
+      <div id="factures-content" style="display:none"><p>Chargement…</p></div>
+      <div id="tej-content" style="display:none"><p>Chargement…</p></div>
       <div id="dossiers-content" style="display:none"><p>Chargement…</p></div>
     </div>
 

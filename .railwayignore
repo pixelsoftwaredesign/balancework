@@ -1,0 +1,7 @@
+pages_build/
+.git/
+static/img/og.png
+*.pyc
+__pycache__/
+.env
+.env.production
