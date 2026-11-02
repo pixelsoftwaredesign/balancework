@@ -64,13 +64,24 @@ TEMPLATES = [
 WSGI_APPLICATION = "balancework.wsgi.application"
 
 # ---------- Base de données ----------
-# DB_ENGINE=sqlite pour tests locaux, sinon MySQL en production.
-if env("DB_ENGINE", "mysql") == "sqlite":
+# DB_ENGINE=sqlite pour tests locaux, postgres pour Render, sinon MySQL.
+db_engine = env("DB_ENGINE", "mysql")
+if db_engine == "sqlite":
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
             "NAME": BASE_DIR / "db.sqlite3",
         }
+    }
+elif db_engine == "postgres":
+    import dj_database_url
+
+    DATABASES = {
+        "default": dj_database_url.config(
+            default=env("DATABASE_URL", ""),
+            conn_max_age=600,
+            conn_health_checks=True,
+        )
     }
 else:
     try:

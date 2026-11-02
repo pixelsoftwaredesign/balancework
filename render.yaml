@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: balancework-api
+    runtime: python
+    region: frankfurt
+    plan: free
+    buildCommand: pip install -r requirements.txt && python manage.py migrate --noinput && python manage.py collectstatic --noinput
+    startCommand: gunicorn balancework.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --timeout 120
+    envVars:
+      - key: DB_ENGINE
+        value: postgres
+      - key: DATABASE_URL
+        fromDatabase:
+          name: balancework-db
+          property: connectionString
+      - key: SECRET_KEY
+        generateValue: true
+      - key: ADMIN_TOKEN
+        value: oU8i9f_OTKL1J1IEmoXukzoKfEBzz_sJ
+      - key: SITE_URL
+        value: https://balancetaxsafety.pages.dev/
+      - key: ALLOWED_HOSTS
+        value: "*"
+      - key: DEBUG
+        value: "False"
+databases:
+  - name: balancework-db
+    databaseName: balancework_db
+    user: balancework_db_user
+    plan: free
+    region: frankfurt
