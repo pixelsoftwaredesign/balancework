@@ -23,7 +23,7 @@ django.setup()
 
 from django.test import Client
 
-API_BASE = os.environ.get("PAGES_API_BASE", "https://web-production-18826.up.railway.app")
+API_BASE = os.environ.get("PAGES_API_BASE", "https://balancework-api.onrender.com")
 
 OUT = BASE_DIR / "pages_build"
 
