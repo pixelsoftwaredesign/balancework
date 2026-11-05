@@ -870,10 +870,26 @@ def api_client_factures(request):
                 valid = [c for c, _ in Facture.NATURE_CHOICES] if field == "nature_operation" else [c for c, _ in Facture.IDENTIFIANT_CHOICES]
                 if value not in valid:
                     return _json({"ok": False, "error": "Valeur invalide."}, 400)
+            elif field == "retenue_source_taux":
+                try:
+                    value = Decimal(str(value))
+                except Exception:
+                    return _json({"ok": False, "error": "Taux de retenue invalide."}, 400)
+                if not (0 <= value <= 100):
+                    return _json({"ok": False, "error": "Taux de retenue hors bornes (0-100)."}, 400)
             else:
                 return _json({"ok": False, "error": "Champ non modifiable ici."}, 400)
-            setattr(obj, field, value)
-            obj.save(update_fields=[field])
+            if field == "retenue_source_taux":
+                montants = facturation.calculer_montants(
+                    obj.montant_ht, obj.taux_tva, obj.nature_operation, obj.type_facture, value,
+                )
+                obj.retenue_source_taux = montants["retenue_source_taux"]
+                obj.retenue_source_montant = montants["retenue_source_montant"]
+                obj.net_a_payer = montants["net_a_payer"]
+                obj.save(update_fields=["retenue_source_taux", "retenue_source_montant", "net_a_payer"])
+            else:
+                setattr(obj, field, value)
+                obj.save(update_fields=[field])
             return _json({"ok": True, "message": "Facture mise à jour."})
 
         if action == "facture_statut":

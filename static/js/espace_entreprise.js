@@ -698,6 +698,7 @@ const BalanceEntrep = (() => {
             <option value="non_resident">Non-résidents (5-25 %)</option>
           </select>
         </div>` : ""}
+        ${type === "achat" ? `<div class="form-group"><label>Taux de retenue à la source (%)</label><input name="retenue_source_taux" type="number" step="0.01" min="0" max="100" placeholder="Auto selon nature" oninput="BalanceEntrep.facturePreview()" /></div>` : ""}
         <div class="form-group"><label>Montant HT (TND) *</label><input name="montant_ht" type="number" step="0.001" min="0.001" required oninput="BalanceEntrep.facturePreview()" /></div>
         <div class="form-group"><label>Taux de TVA</label>
           <select name="taux_tva" onchange="BalanceEntrep.facturePreview()">
@@ -737,8 +738,13 @@ const BalanceEntrep = (() => {
     let rs = 0;
     let taux = 0;
     if (form.type_facture.value === "achat") {
-      taux = TAUX_RS_JS[form.nature_operation.value] || 0;
-      if (form.nature_operation.value === "acquisition" && ttc < SEUIL_JS) taux = 0;
+      const manual = parseFloat(form.retenue_source_taux && form.retenue_source_taux.value);
+      if (!isNaN(manual) && manual >= 0) {
+        taux = manual;
+      } else {
+        taux = TAUX_RS_JS[form.nature_operation.value] || 0;
+        if (form.nature_operation.value === "acquisition" && ttc < SEUIL_JS) taux = 0;
+      }
       if (taux > 0) rs = ((ttc - timbre) * taux) / 100;
     }
     const net = ttc - rs;
@@ -759,7 +765,12 @@ const BalanceEntrep = (() => {
       montant_ht: form.montant_ht.value,
       taux_tva: form.taux_tva.value,
     };
-    if (form.type_facture.value === "achat") payload.nature_operation = form.nature_operation.value;
+    if (form.type_facture.value === "achat") {
+      payload.nature_operation = form.nature_operation.value;
+      if (form.retenue_source_taux && form.retenue_source_taux.value.trim() !== "") {
+        payload.retenue_source_taux = form.retenue_source_taux.value.trim();
+      }
+    }
     try {
       await api("/api/client/factures", { method: "POST", body: JSON.stringify(payload) });
       factureFormCancel();
