@@ -356,7 +356,69 @@ const BalanceEntrep = (() => {
             <button class="btn btn-sm btn-danger" onclick="BalanceEntrep.comptaDeleteEcriture(${w.id})">Supprimer</button>
           </td>
         </tr>`).join("") || '<tr><td colspan="9"><p class="muted-sm">Aucune écriture.</p></td></tr>'}
-      </tbody></table>`;
+      </tbody></table>
+      ${items.length ? `<div class="card" style="margin-top:16px">
+        <h4 style="margin:0 0 10px">Tableau récapitulatif</h4>
+        <table class="admin-table">
+          <thead><tr><th>Catégorie</th><th>Nb</th><th>HT</th><th>TVA</th><th>TTC</th><th>Timbre</th><th>Retenue</th><th>Net à payer</th></tr></thead>
+          <tbody>
+            ${buildRecapRows(items)}
+          </tbody>
+        </table>
+      </div>` : ""}`;
+  }
+
+  function buildRecapRows(items) {
+    const groups = {};
+    const order = [];
+    function add(key, label) {
+      if (!groups[key]) { groups[key] = { label, nb: 0, ht: 0, tva: 0, ttc: 0, timbre: 0, rs: 0, net: 0 }; order.push(key); }
+    }
+    add("vente", "Ventes");
+    add("achat", "Achats");
+    for (const f of items) {
+      const key = f.type_facture === "vente" ? "vente" : "achat";
+      const g = groups[key];
+      g.nb += 1;
+      g.ht += parseFloat(f.montant_ht) || 0;
+      g.tva += parseFloat(f.montant_tva) || 0;
+      g.ttc += parseFloat(f.montant_ttc) || 0;
+      g.timbre += parseFloat(f.timbre_fiscal) || 0;
+      g.rs += parseFloat(f.retenue_source_montant) || 0;
+      g.net += parseFloat(f.net_a_payer) || 0;
+    }
+    const rows = order.filter((k) => groups[k].nb > 0).map((k) => {
+      const g = groups[k];
+      return `<tr><td><strong>${g.label}</strong></td><td>${g.nb}</td><td>${g.ht.toFixed(3)}</td><td>${g.tva.toFixed(3)}</td><td><strong>${g.ttc.toFixed(3)}</strong></td><td>${g.timbre.toFixed(3)}</td><td>${g.rs.toFixed(3)}</td><td><strong>${g.net.toFixed(3)}</strong></td></tr>`;
+    });
+    // Total général
+    const tot = { nb: 0, ht: 0, tva: 0, ttc: 0, timbre: 0, rs: 0, net: 0 };
+    for (const f of items) {
+      tot.nb += 1; tot.ht += parseFloat(f.montant_ht) || 0; tot.tva += parseFloat(f.montant_tva) || 0;
+      tot.ttc += parseFloat(f.montant_ttc) || 0; tot.timbre += parseFloat(f.timbre_fiscal) || 0;
+      tot.rs += parseFloat(f.retenue_source_montant) || 0; tot.net += parseFloat(f.net_a_payer) || 0;
+    }
+    rows.push(`<tr style="background:#f1f5f9"><td><strong>Total général</strong></td><td><strong>${tot.nb}</strong></td><td><strong>${tot.ht.toFixed(3)}</strong></td><td><strong>${tot.tva.toFixed(3)}</strong></td><td><strong>${tot.ttc.toFixed(3)}</strong></td><td><strong>${tot.timbre.toFixed(3)}</strong></td><td><strong>${tot.rs.toFixed(3)}</strong></td><td><strong>${tot.net.toFixed(3)}</strong></td></tr>`);
+    // Sous-total par nature d'opération (achats avec retenue)
+    const byNature = {};
+    for (const f of items) {
+      if (f.type_facture !== "achat") continue;
+      const key = f.nature_label || f.nature_operation;
+      if (!byNature[key]) byNature[key] = { nb: 0, ht: 0, ttc: 0, rs: 0, taux: f.retenue_source_taux };
+      byNature[key].nb += 1;
+      byNature[key].ht += parseFloat(f.montant_ht) || 0;
+      byNature[key].ttc += parseFloat(f.montant_ttc) || 0;
+      byNature[key].rs += parseFloat(f.retenue_source_montant) || 0;
+    }
+    const natureRows = Object.keys(byNature).map((k) => {
+      const g = byNature[k];
+      return `<tr><td style="padding-left:18px">${escapeHtml(k)} (${g.taux} %)</td><td>${g.nb}</td><td>${g.ht.toFixed(3)}</td><td>—</td><td>${g.ttc.toFixed(3)}</td><td>—</td><td>${g.rs.toFixed(3)}</td><td>—</td></tr>`;
+    });
+    if (natureRows.length) {
+      rows.push(`<tr><td colspan="8" style="background:#e2e8f0;font-weight:600;padding:6px 8px">Détail par nature d'opération (achats)</td></tr>`);
+      rows.push(...natureRows);
+    }
+    return rows.join("");
   }
 
   async function comptaEcritureStatut(id, statut) {
