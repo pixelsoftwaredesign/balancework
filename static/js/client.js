@@ -141,12 +141,41 @@ const BalanceClient = (() => {
         </tr>`;
       })
       .join("");
+    // Tableau récapitulatif par type de déclaration
+    const recap = {};
+    for (const d of declarations) {
+      const key = d.type_declaration;
+      if (!recap[key]) recap[key] = { type: d.type_declaration, nb: 0, montant: 0, depose: 0, retard: 0, afaire: 0 };
+      recap[key].nb += 1;
+      recap[key].montant += parseFloat(d.montant_a_payer) || 0;
+      if (d.statut === "Déposé (Validé)") recap[key].depose += 1;
+      else if (d.statut === "En retard") recap[key].retard += 1;
+      else recap[key].afaire += 1;
+    }
+    const recapRows = Object.values(recap).map((r) =>
+      `<tr><td><strong>${escapeHtml(r.type)}</strong></td><td>${r.nb}</td><td>${r.depose}</td><td>${r.retard}</td><td>${r.afaire}</td><td><strong>${r.montant.toFixed(3)} TND</strong></td></tr>`
+    ).join("");
+    const totMontant = declarations.reduce((s, d) => s + (parseFloat(d.montant_a_payer) || 0), 0);
+    const totDepose = declarations.filter((d) => d.statut === "Déposé (Validé)").length;
+    const totRetard = declarations.filter((d) => d.statut === "En retard").length;
+    const totAfaire = declarations.length - totDepose - totRetard;
+
     wrap.innerHTML = `<div class="card">
       <h3>Mes déclarations fiscales</h3>
       <p style="color:#64748b;font-size:14px;margin:0 0 14px">Suivi des obligations déclaratives (DGI) gérées par votre cabinet.</p>
       <table class="admin-table">
         <thead><tr><th>Type</th><th>Période</th><th>Échéance légale</th><th>Statut</th><th>Montant à payer</th><th>N° quittance / TEJ</th></tr></thead>
         <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h4 style="margin:0 0 10px">Tableau récapitulatif des déclarations</h4>
+      <table class="admin-table">
+        <thead><tr><th>Type de déclaration</th><th>Nb</th><th>Déposé</th><th>En retard</th><th>À préparer</th><th>Montant total</th></tr></thead>
+        <tbody>
+          ${recapRows}
+          <tr style="background:#f1f5f9"><td><strong>Total</strong></td><td><strong>${declarations.length}</strong></td><td><strong>${totDepose}</strong></td><td><strong>${totRetard}</strong></td><td><strong>${totAfaire}</strong></td><td><strong>${totMontant.toFixed(3)} TND</strong></td></tr>
+        </tbody>
       </table>
     </div>`;
   }
