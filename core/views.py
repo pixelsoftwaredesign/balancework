@@ -912,6 +912,218 @@ def api_client_factures(request):
 
 
 @csrf_exempt
+def api_client_factures_export(request):
+    """Espace entreprise (tenant) : export Excel des factures (HT, TVA, timbre, retenue à la source, net à payer)."""
+    client = _client_from_request(request)
+    if not client:
+        return _json({"ok": False, "error": "Non autorisé"}, 401)
+    if not hasattr(client, "entreprise"):
+        return _json({"ok": False, "error": "Aucune entreprise (tenant) n'est associée à votre compte."}, 404)
+    entreprise = client.entreprise
+
+    if request.method != "GET":
+        return _json({"ok": False, "error": "Méthode non autorisée"}, 405)
+
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Factures"
+
+    header_fill = PatternFill("solid", fgColor="0F766E")
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    thin = Side(style="thin", color="CBD5E1")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    headers = [
+        "N° facture", "Type", "Date", "Tiers", "Identifiant fiscal", "Nature d'opération",
+        "Montant HT", "Taux TVA (%)", "Montant TVA", "Montant TTC", "Timbre fiscal",
+        "Taux RS (%)", "Montant RS", "Net à payer", "Statut",
+    ]
+    for col, h in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col, value=h)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = border
+
+    factures = Facture.objects.filter(entreprise=entreprise).order_by("-date", "-id")
+    row = 2
+    for f in factures:
+        values = [
+            f.numero,
+            f.get_type_facture_display(),
+            f.date.strftime("%d/%m/%Y"),
+            f.tiers,
+            f.tiers_identifiant or "—",
+            f.get_nature_operation_display(),
+            float(f.montant_ht),
+            float(f.taux_tva),
+            float(f.montant_tva),
+            float(f.montant_ttc),
+            float(f.timbre_fiscal),
+            float(f.retenue_source_taux),
+            float(f.retenue_source_montant),
+            float(f.net_a_payer),
+            f.get_statut_display() if hasattr(f, "get_statut_display") else f.statut,
+        ]
+        for col, v in enumerate(values, start=1):
+            cell = ws.cell(row=row, column=col, value=v)
+            cell.border = border
+            if col in (7, 9, 10, 11, 13, 14):
+                cell.number_format = '#,##0.000'
+            if col == 8 or col == 12:
+                cell.number_format = '0.00'
+        row += 1
+
+    # Ligne de totaux
+    if row > 2:
+        ws.cell(row=row, column=1, value="TOTAL").font = Font(bold=True)
+        for col in (7, 9, 10, 11, 13, 14):
+            c = ws.cell(row=row, column=col, value=f"=SUM({get_column_letter(col)}2:{get_column_letter(col)}{row-1})")
+            c.font = Font(bold=True)
+            c.number_format = '#,##0.000'
+            c.border = border
+        ws.cell(row=row, column=6, value=f"{row-2} facture(s)").font = Font(bold=True, italic=True)
+
+    widths = [14, 16, 12, 28, 20, 34, 14, 10, 14, 14, 12, 10, 14, 14, 12]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "C2"
+    ws.auto_filter.ref = f"A1:O{row-1}"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    from django.http import HttpResponse
+    filename = f"factures_{entreprise.raison_sociale.replace(' ', '_')[:30]}.xlsx"
+    resp = HttpResponse(
+        buf.getvalue(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    resp["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return resp
+
+@csrf_exempt
+def api_client_tej_export(request):
+    """Espace entreprise (tenant) : export Excel de la déclaration TEJ (certificats par bénéficiaire)."""
+    client = _client_from_request(request)
+    if not client:
+        return _json({"ok": False, "error": "Non autorisé"}, 401)
+    if not hasattr(client, "entreprise"):
+        return _json({"ok": False, "error": "Aucune entreprise (tenant) n'est associée à votre compte."}, 404)
+    entreprise = client.entreprise
+
+    if request.method != "GET":
+        return _json({"ok": False, "error": "Méthode non autorisée"}, 405)
+
+    mois_raw = (request.GET.get("mois") or "").strip()
+    if not mois_raw:
+        return _json({"ok": False, "error": "Paramètre mois requis (AAAA-MM)."}, 400)
+    try:
+        annee, mois = (int(x) for x in mois_raw.split("-"))
+    except Exception:
+        return _json({"ok": False, "error": "Paramètre mois invalide (AAAA-MM)."}, 400)
+
+    xml, certificats, totaux, controles, erreur = facturation.construire_declaration_tej(entreprise, annee, mois)
+    if erreur:
+        return _json({"ok": False, "error": erreur, "controles": controles}, 400)
+
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = f"TEJ {mois:02d}-{annee}"
+
+    header_fill = PatternFill("solid", fgColor="0F766E")
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    thin = Side(style="thin", color="CBD5E1")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    # En-tête info
+    ws["A1"] = f"Déclaration TEJ — Retenue à la source — {entreprise.raison_sociale}"
+    ws["A1"].font = Font(bold=True, size=14)
+    ws["A2"] = f"Mois : {mois:02d}/{annee} · Déclarant : {entreprise.raison_sociale}"
+    ws["A3"] = f"Total TTC : {totaux['total_ttc']} TND · Total retenue : {totaux['total_retenue']} TND · Total net servi : {totaux['total_net']} TND"
+    ws["A4"] = f"Certificats : {totaux['nb_certificats']} · Opérations : {totaux['nb_operations']}"
+
+    # Tableau des opérations
+    start_row = 6
+    headers = ["Bénéficiaire", "Identifiant", "N° facture", "Date paiement", "Montant HT (millimes)", "Taux RS (%)", "Montant TTC (millimes)", "Montant RS (millimes)", "Net servi (millimes)", "Réf. certificat"]
+    for col, h in enumerate(headers, start=1):
+        cell = ws.cell(row=start_row, column=col, value=h)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = border
+
+    row = start_row + 1
+    for c in certificats:
+        for i, o in enumerate(c["operations"]):
+            values = [
+                c["tiers"] if i == 0 else "",
+                f"{c['identifiant_type']} : {c['identifiant']}" if i == 0 else "",
+                o["numero"],
+                o["date"],
+                o["montant_ht"],
+                o["taux_rs"],
+                o["montant_ttc"],
+                o["montant_rs"],
+                o["montant_net_servi"],
+                o["ref"] if i == 0 else "",
+            ]
+            for col, v in enumerate(values, start=1):
+                cell = ws.cell(row=row, column=col, value=v)
+                cell.border = border
+            row += 1
+
+    # Totaux
+    ws.cell(row=row, column=1, value="TOTAL").font = Font(bold=True)
+    for col in (5, 7, 8, 9):
+        c = ws.cell(row=row, column=col, value=f"=SUM({get_column_letter(col)}{start_row+1}:{get_column_letter(col)}{row-1})")
+        c.font = Font(bold=True)
+        c.border = border
+    row += 2
+
+    # Contrôles de conformité
+    ws.cell(row=row, column=1, value="Contrôles de conformité").font = Font(bold=True, size=12)
+    row += 1
+    ctrl_headers = ["N° facture", "Tiers", "Niveau", "Message"]
+    for col, h in enumerate(ctrl_headers, start=1):
+        cell = ws.cell(row=row, column=col, value=h)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.border = border
+    row += 1
+    for c in controles:
+        for p in (c.get("points") or []):
+            for col, v in enumerate([c["numero"], c["tiers"], p["niveau"], p["message"]], start=1):
+                cell = ws.cell(row=row, column=col, value=v)
+                cell.border = border
+            row += 1
+
+    widths = [28, 24, 14, 14, 20, 10, 20, 18, 18, 18]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    from django.http import HttpResponse
+    filename = f"TEJ_RS_{annee}_{mois:02d}_{(entreprise.raison_sociale or 'entreprise').replace(' ', '_')[:20]}.xlsx"
+    resp = HttpResponse(buf.getvalue(), content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    resp["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return resp
+
+@csrf_exempt
 def api_client_tej(request):
     """Espace entreprise : conformité TEJ + export XML CCT-RS-V2 de la retenue à la source."""
     client = _client_from_request(request)

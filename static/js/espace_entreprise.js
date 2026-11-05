@@ -626,6 +626,7 @@ const BalanceEntrep = (() => {
             <button class="btn btn-sm" onclick="BalanceEntrep.factureForm('vente')">＋ Facture de vente</button>
             <button class="btn btn-sm btn-outline" onclick="BalanceEntrep.factureForm('achat')">＋ Facture d'achat</button>
             <button class="btn btn-sm btn-outline" onclick="BalanceEntrep.loadFactures()">⟳ Recharger</button>
+            <button class="btn btn-sm btn-outline" onclick="BalanceEntrep.facturesExportExcel()">⬇ Export Excel</button>
           </div>
         </div>
       </div>
@@ -820,6 +821,7 @@ const BalanceEntrep = (() => {
           <input type="month" id="tej-mois" value="${new Date().toISOString().slice(0, 7)}" style="padding:6px" />
           <button class="btn btn-sm" onclick="BalanceEntrep.tejCheck()">Vérifier la conformité</button>
           <button class="btn btn-sm btn-outline" onclick="BalanceEntrep.tejExport()">⬇ Exporter le XML TEJ</button>
+          <button class="btn btn-sm btn-outline" onclick="BalanceEntrep.tejExportExcel()">⬇ Exporter Excel TEJ</button>
         </div>
       </div>
       <div id="tej-result"><p class="muted-sm">Sélectionnez un mois puis vérifiez la conformité des factures avant export.</p></div>`;
@@ -900,6 +902,41 @@ const BalanceEntrep = (() => {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `TEJ_RS_${mois}_${(data.declarant || "entreprise").replace(/[^a-zA-Z0-9]+/g, "_").slice(0, 30)}.xml`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  async function facturesExportExcel() {
+    const url = API_BASE + "/api/client/factures/export";
+    const res = await fetch(url, { headers: { ...(token() ? { Authorization: `Bearer ${token()}` } : {}) } });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      showAlert("dashboard-alert", "error", data.error || "Export impossible");
+      return;
+    }
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "factures.xlsx";
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  async function tejExportExcel() {
+    const mois = document.getElementById("tej-mois").value;
+    if (!mois) return;
+    const url = API_BASE + `/api/client/tej/export?mois=${mois}`;
+    const res = await fetch(url, { headers: { ...(token() ? { Authorization: `Bearer ${token()}` } : {}) } });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      showAlert("dashboard-alert", "error", data.error || "Export impossible");
+      renderTej(res.status, data);
+      return;
+    }
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `TEJ_RS_${mois}.xlsx`;
     a.click();
     URL.revokeObjectURL(a.href);
   }
@@ -1086,6 +1123,8 @@ const BalanceEntrep = (() => {
     loadTej,
     tejCheck,
     tejExport,
+    facturesExportExcel,
+    tejExportExcel,
     showPrefacture,
     closePrefacture,
     printPrefacture,

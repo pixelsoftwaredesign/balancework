@@ -39,6 +39,8 @@ urlpatterns = [
     path("api/client/messages", views.api_client_messages, name="api_client_messages"),
     path("api/client/comptabilite", views.api_client_comptabilite, name="api_client_comptabilite"),
     path("api/client/factures", views.api_client_factures, name="api_client_factures"),
+    path("api/client/factures/export", views.api_client_factures_export, name="api_client_factures_export"),
+    path("api/client/tej/export", views.api_client_tej_export, name="api_client_tej_export"),
     path("api/client/tej", views.api_client_tej, name="api_client_tej"),
 
     # API admin (jeton Bearer)
